@@ -2,22 +2,18 @@
 
 ## Active objective
 
-Baseline Sparse Autoencoder architecture and training pipeline specification under leakage-safe data contract.
+Configurable Sparse Autoencoder baseline implementation and loss module verified; preparation for controlled baseline training experiments.
 
 ## Current status
 
-Leakage-safe data foundation established:
-- Chronological evaluation boundaries approved (`DEC-009`):
-  - `TRAIN`: 2020-02-01 to 2020-03-31 (445,298 rows, healthy baseline)
-  - `CALIBRATION`: 2020-04-01 to 2020-05-31 (411,534 rows, 2 failure events)
-  - `FINAL HOLDOUT`: 2020-06-01 to 2020-08-31 (659,586 rows, 2 failure events, protected)
-  - `UNUSED TAIL`: 2020-09-01 (530 rows, excluded from primary evaluation)
-- Data contract created: `docs/data_contract.md` establishes schema, primary 7 analogue features, gap rules (Δt > 60s), and strict anti-leakage invariants.
-- Baseline design updated: `docs/baseline_design.md` incorporates full preprocessing flow, candidate scalers (StandardScaler, MinMaxScaler), and causal window rules.
-- Data ingestion and validation implemented: `src/data/contract.py`, `src/data/validator.py`, `src/data/windowing.py`, and `src/preprocessing/scalers.py`.
-- Unit test suite implemented: 16 unit tests passing across `tests/`, verifying schema checks, non-overlapping splits, gap resets, causal windowing, fit/transform separation, and anti-leakage invariant (future row cannot enter past window).
-- Model implementation has NOT started.
-- Model architecture, window winner, scaler winner, threshold, and alert semantics remain open.
+Baseline model layer established:
+- Data foundation audit complete: raw dataset SHA-256 confirmed (`db30ccb4ea402e3c8bf2c99db06e288d4f2a772f6928f9dbe26a920d69793e24`); cadence descriptions corrected across all docs to audited values (predominantly 9–13s, 36 sub-60s intervals, 331 service gaps > 60s); $W$ explicitly defined as observation count.
+- Scaler enforcement active: `BaseScaler` programmatically blocks fitting on non-TRAIN partitions and non-TRAIN timestamps.
+- Model design published: `docs/sae_design.md` specifies symmetric MLP architecture ($D \to H \to Z \to H \to D$), canonical dimensionality rule, and L1/KL sparsity formulations.
+- PyTorch implementation completed: `src/models/sae.py`, `src/models/loss.py`, and `src/models/__init__.py`.
+- Unit test suite expanded: 27 unit tests passing across `tests/`, verifying model shapes (2D/3D), deterministic inference, sample-level reconstruction errors, L1/KL sparsity penalties, and dimension validation.
+- Model training has NOT started.
+- Window size winner, scaler winner, sparsity mechanism winner, threshold, and alert semantics remain open technical decisions.
 
 ## Approved project direction
 

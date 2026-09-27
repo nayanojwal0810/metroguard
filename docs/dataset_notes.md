@@ -96,8 +96,7 @@ The official UCI Machine Learning Repository entry (#791, MetroPT-3) states:
 - Number of Features: 15
 - Temporal span: February 2020 to August 2020.
 
-METROGUARD INTERPRETATION:
-The official UCI repository correctly reflects the actual artifact row count (1,516,948 rows). The string "15169480" in the companion PDF is an obvious typographical error (an appended trailing zero). While onboard hardware acquisition occurred at 1 Hz, the publicly distributed MetroPT-3 CSV is decimated to a nominal 10-second sampling interval (~0.1 Hz) with operational jitter (8–13s) and physical service breaks. The ~10-second cadence is an empirical property of the actual CSV and UCI metadata, not a claim from the original paper text. MetroGuard models time-series horizons, causal windows, and detection lead times using nominal 10-second spacing, not 1 Hz.
+The official UCI repository correctly reflects the actual artifact row count (1,516,948 rows). The string "15169480" in the companion PDF is an obvious typographical error (an appended trailing zero). While onboard hardware acquisition occurred at 1 Hz, the publicly distributed MetroPT-3 CSV is decimated to a nominal 10-second sampling interval (~0.1 Hz): cadence is predominantly 9–13 seconds (99.976%), a small number of larger sub-60-second intervals exist (36 intervals), and 331 service breaks have Δt > 60 seconds. The ~10-second cadence is an empirical property of the actual CSV and UCI metadata, not a claim from the original paper text. W represents observation count, not an elapsed-time duration.
 ```
 
 ## Chronology & Integrity Verification

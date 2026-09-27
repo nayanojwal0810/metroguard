@@ -36,7 +36,7 @@ The final window size is not frozen yet. A candidate calibration set is defined 
 - A window may not cross a train/calibration/holdout boundary.
 - A window may not cross a service gap.
 - No padding, interpolation, or synthetic observations are introduced.
-- **Therefore, $W$ represents observation count, not an exact elapsed-time duration.** Physical duration varies naturally with sampling cadence jitter (8–13s).
+- **Therefore, $W$ represents observation count, not an exact elapsed-time duration.** Cadence is predominantly 9–13 seconds, with a small number of larger sub-60-second intervals and 331 service breaks ($\Delta t > 60\text{s}$), so physical duration varies naturally across $W$ observations.
 
 ### Window Construction Rules
 

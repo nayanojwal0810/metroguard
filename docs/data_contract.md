@@ -98,4 +98,4 @@ The authoritative definition of a temporal window in MetroGuard is:
 - No padding, interpolation, or synthetic observations are introduced.
 - **Therefore, $W$ represents observation count, not an exact elapsed-time duration.**
 
-Because nominal sampling cadence is ~10 seconds with operational jitter (8–13s), the physical elapsed time across $W$ observations varies naturally; $W$ must never be equated with a fixed physical duration.
+The cadence is predominantly 9–13 seconds (99.976% of intervals), a small number of larger sub-60-second intervals exist (36 intervals between 13s and 60s), and 331 service gaps have $\Delta t > 60\text{ seconds}$. Consequently, physical elapsed time across $W$ observations varies naturally; $W$ represents observation count, not an elapsed-time duration, and must never be equated with an exact elapsed-time interval.
