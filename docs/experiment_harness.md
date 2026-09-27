@@ -145,4 +145,7 @@ python -m src.experiments.runner --list-matrix
 
 # View estimated compute and memory requirements
 python -m src.experiments.runner --estimate-resources
+
+# Execute the authoritative real-data baseline experiment (operator-only)
+python -m src.experiments.runner --run-baseline
 ```

@@ -450,3 +450,60 @@ def test_run_metadata_creation_and_serialization(tmp_path: Path) -> None:
     assert data["calibration_metrics"]["num_usable_windows"] > 0
     assert "window_accounting" in data["calibration_metrics"]
     assert data["calibration_metrics"]["labeling_convention"] == "window_end_timestamp"
+
+
+def test_baseline_configuration_specification() -> None:
+    """Verify that get_baseline_config conforms strictly to the authoritative specification."""
+    from src.experiments.runner import BASELINE_RUN_ID, get_baseline_config
+
+    assert BASELINE_RUN_ID == "baseline_w30_standard_l1_s42"
+    cfg = get_baseline_config(device="cpu")
+
+    # Authoritative experiment parameters
+    assert cfg.run_id == "baseline_w30_standard_l1_s42"
+    assert cfg.window_size == 30
+    assert cfg.stride == 1
+    assert cfg.input_dim == 210  # 7 * 30
+    assert cfg.hidden_dim == 128
+    assert cfg.latent_dim == 32
+    assert cfg.scaler_type == "StandardScaler"
+    assert cfg.sparsity_type == "l1"
+    assert cfg.sparsity_weight == 1e-4
+    assert cfg.target_sparsity == 0.05
+    assert cfg.seed == 42
+    assert cfg.optimizer == "adam"
+    assert cfg.learning_rate == 1e-3
+    assert cfg.batch_size == 256
+    assert cfg.epochs == 10
+    assert cfg.validation_fraction == 0.10
+    assert cfg.early_stopping_patience is None
+    assert cfg.device == "cpu"
+    assert cfg.features == PRIMARY_FEATURES
+
+
+def test_baseline_synthetic_pipeline_execution(tmp_path: Path) -> None:
+    """Verify end-to-end baseline pipeline mechanics using synthetic data without real training."""
+    from src.experiments.runner import get_baseline_config
+
+    train_df, cal_df = create_synthetic_experiment_data(num_train_rows=100, num_cal_rows=100, seed=42)
+    cfg = get_baseline_config(device="cpu")
+    # Use 1 epoch and small batch for fast synthetic test
+    cfg.epochs = 1
+    cfg.batch_size = 16
+
+    result = run_experiment(
+        config=cfg,
+        train_df=train_df,
+        cal_df=cal_df,
+        dataset_fingerprint=SYNTHETIC_DATASET_FINGERPRINT,
+        save_dir=str(tmp_path),
+        verbose=False,
+    )
+
+    assert result.run_id == "baseline_w30_standard_l1_s42"
+    assert result.history.epochs_trained == 1
+    assert result.metadata["train_raw_row_count"] == 100
+    assert result.metadata["train_fit_raw_row_count"] == 90
+    assert result.metadata["train_val_raw_row_count"] == 10
+    assert result.metadata["holdout_observations_retained"] is False
+    assert (tmp_path / "baseline_w30_standard_l1_s42.json").exists()

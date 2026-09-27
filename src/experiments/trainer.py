@@ -166,6 +166,7 @@ class SAETrainer:
         epochs: int = 10,
         early_stopping_patience: Optional[int] = None,
         min_delta: float = 1e-5,
+        verbose: bool = False,
     ) -> TrainingHistory:
         """Run full multi-epoch training loop with optional early stopping.
 
@@ -211,9 +212,25 @@ class SAETrainer:
             history.history.append(metric_entry)
             history.epochs_trained = epoch
 
+            if verbose:
+                val_str = (
+                    f" | Val Total Loss: {metric_entry.val_total_loss:.6f} "
+                    f"(Recon: {metric_entry.val_recon_loss:.6f})"
+                    if metric_entry.val_total_loss is not None
+                    else ""
+                )
+                print(
+                    f"  Epoch {epoch:2d}/{epochs:2d} | "
+                    f"Train Total Loss: {metric_entry.train_total_loss:.6f} "
+                    f"(Recon: {metric_entry.train_recon_loss:.6f}, Sparsity: {metric_entry.train_sparsity_loss:.6f})"
+                    f"{val_str}"
+                )
+
             # Early stopping check
             if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
                 history.early_stopped = True
+                if verbose:
+                    print(f"  Early stopping triggered at epoch {epoch}")
                 break
 
         # Restore best model state when validation was active

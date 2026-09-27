@@ -440,6 +440,7 @@ def run_experiment(
         val_loader=val_loader,
         epochs=config.epochs,
         early_stopping_patience=config.early_stopping_patience,
+        verbose=verbose,
     )
 
     # 7. Evaluate on CALIBRATION (model & scaler frozen)
@@ -609,6 +610,112 @@ def run_smoke_test(verbose: bool = True) -> ExperimentResult:
     return result
 
 
+BASELINE_RUN_ID = "baseline_w30_standard_l1_s42"
+
+
+def get_baseline_config(device: str = "cpu") -> ExperimentConfig:
+    """Construct the authoritative first baseline experiment configuration.
+
+    Settings:
+    - Run ID: baseline_w30_standard_l1_s42
+    - Window size: W = 30 observations
+    - Input dimension: D = 7 * 30 = 210
+    - Hidden dimension: H = 128
+    - Latent bottleneck: Z = 32
+    - Scaler: StandardScaler (fit strictly on TRAIN-fit)
+    - Sparsity: L1 activity penalty (weight = 1e-4)
+    - Target sparsity (KL default): 0.05
+    - Seed: 42
+    - Optimizer: Adam, learning_rate = 1e-3
+    - Batch size: 256
+    - Epochs: 10
+    - Train-validation fraction: 0.10 (chronological final 10% of TRAIN)
+    - Early stopping: None (default harness setting)
+    - Stride: 1
+    - Device: cpu
+    """
+    return ExperimentConfig(
+        run_id=BASELINE_RUN_ID,
+        window_size=30,
+        stride=1,
+        scaler_type="StandardScaler",
+        sparsity_type="l1",
+        sparsity_weight=1e-4,
+        target_sparsity=0.05,
+        seed=42,
+        optimizer="adam",
+        learning_rate=1e-3,
+        batch_size=256,
+        epochs=10,
+        validation_fraction=0.10,
+        early_stopping_patience=None,
+        device=device,
+    )
+
+
+def run_baseline(
+    data_path: str = "data/raw/MetroPT3(AirCompressor).csv",
+    output_dir: str = "artifacts/runs",
+    device: str = "cpu",
+    verbose: bool = True,
+) -> ExperimentResult:
+    """Execute the authoritative MetroPT-3 baseline reference run."""
+    config = get_baseline_config(device=device)
+    if verbose:
+        print("=" * 70)
+        print("MetroGuard: Executing Authoritative Baseline Reference Run")
+        print("=" * 70)
+        print(f"Run ID: {config.run_id}")
+        print(f"Dataset: {data_path}")
+        print(f"Architecture: D={config.input_dim}, H={config.hidden_dim}, Z={config.latent_dim}")
+        print(f"Window size (W): {config.window_size}, Stride: {config.stride}")
+        print(f"Scaler: {config.scaler_type} (fit strictly on TRAIN-fit)")
+        print(f"Sparsity: {config.sparsity_type} (weight={config.sparsity_weight})")
+        print(f"Optimizer: {config.optimizer}, LR: {config.learning_rate}, Batch: {config.batch_size}")
+        print(f"Epochs: {config.epochs}, Val Fraction: {config.validation_fraction} (chronological)")
+        print(f"Device: {config.device}, Seed: {config.seed}")
+        print("=" * 70)
+
+    result = run_experiment(
+        config=config,
+        raw_csv_path=data_path,
+        save_dir=output_dir,
+        verbose=verbose,
+    )
+
+    if verbose:
+        m = result.calibration_metrics
+        print("\n" + "=" * 70)
+        print(f"Baseline Execution Complete: {config.run_id}")
+        print("=" * 70)
+        print(f"Dataset Fingerprint: {result.metadata['dataset_fingerprint']}")
+        print(f"Git Commit: {result.metadata['git_commit']}")
+        print(f"Runtime: {result.metadata['runtime_seconds']:.2f}s")
+        print(
+            f"Train Raw Rows: {result.metadata['train_raw_row_count']:,} | "
+            f"Cal Raw Rows: {result.metadata['calibration_raw_row_count']:,}"
+        )
+        print(
+            f"Train-fit Windows: {result.metadata['train_fit_window_count']:,} | "
+            f"Train-val Windows: {result.metadata['train_val_window_count']:,}"
+        )
+        print(f"Calibration Usable Windows: {m.num_usable_windows:,}")
+        print(
+            f"Calibration Normal Windows: {m.num_normal_windows:,} | "
+            f"Failure Windows: {m.num_failure_windows:,}"
+        )
+        if m.pr_auc is not None:
+            print(f"Calibration PR-AUC: {m.pr_auc:.6f}")
+        if m.roc_auc is not None:
+            print(f"Calibration ROC-AUC: {m.roc_auc:.6f}")
+        print(f"Normal Mean Score: {m.normal_distribution.get('mean', 0.0):.6f}")
+        print(f"Failure Mean Score: {m.failure_distribution.get('mean', 0.0):.6f}")
+        print(f"Artifact Saved: {Path(output_dir) / f'{config.run_id}.json'}")
+        print("=" * 70)
+
+    return result
+
+
 def main() -> None:
     """CLI entry point for experiment runner."""
     parser = argparse.ArgumentParser(
@@ -618,6 +725,35 @@ def main() -> None:
         "--smoke",
         action="store_true",
         help="Run lightweight end-to-end smoke test on synthetic data.",
+    )
+    parser.add_argument(
+        "--run-baseline",
+        action="store_true",
+        help="Execute the authoritative real-data baseline experiment (baseline_w30_standard_l1_s42).",
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Run identifier to execute (e.g. baseline_w30_standard_l1_s42).",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default="data/raw/MetroPT3(AirCompressor).csv",
+        help="Path to raw MetroPT-3 CSV dataset (default: data/raw/MetroPT3(AirCompressor).csv).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="artifacts/runs",
+        help="Directory to save experiment artifacts and JSON metadata (default: artifacts/runs).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Execution device ('cpu' or 'cuda', default: cpu).",
     )
     parser.add_argument(
         "--list-matrix",
@@ -634,6 +770,28 @@ def main() -> None:
 
     if args.smoke:
         run_smoke_test(verbose=True)
+    elif args.run_baseline or args.run_id == BASELINE_RUN_ID:
+        run_baseline(
+            data_path=args.data_path,
+            output_dir=args.output_dir,
+            device=args.device,
+            verbose=True,
+        )
+    elif args.run_id:
+        configs = {c.run_id: c for c in generate_matrix_configs()}
+        if args.run_id in configs:
+            cfg = configs[args.run_id]
+            cfg.device = args.device
+            run_experiment(
+                config=cfg,
+                raw_csv_path=args.data_path,
+                save_dir=args.output_dir,
+                verbose=True,
+            )
+        else:
+            raise ValueError(
+                f"Unknown run_id '{args.run_id}'. Available: {BASELINE_RUN_ID}, {list(configs.keys())}"
+            )
     elif args.list_matrix:
         configs = generate_matrix_configs()
         print(f"Total candidate matrix configurations: {len(configs)}")
@@ -647,7 +805,7 @@ def main() -> None:
         print("=== Estimated Resource Requirements: Real-Data Experiments ===")
         print(f"Dataset: MetroPT-3 ({EXPECTED_TRAIN_ROWS:,} TRAIN rows, {EXPECTED_CALIBRATION_ROWS:,} CALIBRATION rows)")
         print("Hardware Target: Single CPU Core (x86_64)")
-        print("- Single Run (10 epochs, batch size 256): ~3 to 5 minutes, ~1.5 GB RAM")
+        print("- Single Run (10 epochs, batch size 256): ~3.5 to 5 minutes, ~1.2 to 1.5 GB RAM")
         print("- 16-Config Matrix Sequential: ~48 to 80 minutes, ~2.5 GB peak RAM")
         print("Hardware Target: Google Colab / GPU (T4 / V100)")
         print("- Single Run: ~20 to 30 seconds")
