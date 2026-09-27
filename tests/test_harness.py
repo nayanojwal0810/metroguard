@@ -590,3 +590,6 @@ def test_calibration_metric_naming_and_calculation() -> None:
     assert "pr_auc_trapezoidal" in d
     assert "average_precision" in d
     assert "roc_auc" in d
+    assert "Event_1" in m.event_distributions
+    assert m.event_distributions["Event_1"]["average_precision"] is not None
+    assert 0.0 <= m.event_distributions["Event_1"]["average_precision"] <= 1.0
