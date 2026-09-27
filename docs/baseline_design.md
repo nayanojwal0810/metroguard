@@ -30,20 +30,58 @@ The final window size is not frozen yet. A candidate calibration set is defined 
 
 These window sizes represent candidate engineering configurations, not claims from literature. The final window size will be selected based strictly on permitted training and calibration evidence; the final holdout must not influence window selection.
 
-### Provisional Causal Window Rule
+### Window Construction Rules
 
 To ensure leakage-safe operational behavior:
-1. **Strictly Causal:** For any decision at time $t$, window features use only observations available at or before $t$. Centered rolling windows and future backfilling are strictly forbidden.
-2. **Gap Boundary Rule:** Windows cannot cross operational service or telemetry breaks. A gap-reset condition is established at $\Delta t > 60\text{ seconds}$.
-3. **Engineering Provenance:** The 60-second gap boundary is an empirical MetroGuard engineering rule, not a literature fact.
-4. **Insufficient History:** Periods following a service break with fewer observations than window length $W$ must be handled explicitly (e.g. state flagged as warming up or insufficient history) rather than padded using future observations or interpolated across gaps.
+1. **Strictly Causal:** For any decision at time $t$, window features use only observations available at or before $t$: $[t - (W-1)\Delta t, \, t]$. Centered rolling windows and future backfilling are strictly forbidden.
+2. **Fixed Observation Count:** Each window contains exactly $W$ continuous consecutive observations.
+3. **Configurable Stride:** Stride $S$ is configurable (default $S=1$ for continuous inference, $S \ge 1$ for downsampled evaluation).
+4. **Gap Boundary Rule:** Windows cannot cross operational service or telemetry breaks. A gap-reset condition is established at $\Delta t > 60\text{ seconds}$.
+5. **Split Boundary Rule:** Windows cannot cross chronological split boundaries ($\text{Train} \to \text{Calibration} \to \text{Holdout}$).
+6. **Insufficient History:** Periods following a service break or partition boundary with fewer observations than window length $W$ must produce no model-ready window (`INSUFFICIENT_HISTORY`), rather than using fabricated padding or bridging across gaps.
 
 ## Preprocessing Requirements
 
-Only preprocessing requirements supported by verified data characteristics are mandated:
+The preprocessing pipeline strictly separates parameter fitting from evaluation transforms:
+
+```text
+raw CSV
+ ↓
+timestamp validation & ordering
+ ↓
+select primary features (7 continuous analogue channels)
+ ↓
+chronological split (Train / Calibration / Final Holdout / Unused Tail)
+ ↓
+fit preprocessing ONLY on training data
+ ↓
+transform calibration / holdout using training-fitted parameters
+ ↓
+causal temporal windows (with gap and split boundary isolation)
+ ↓
+model-ready representation
+```
+
+### Preprocessing Invariants
+
 - **Index Removal:** Drop the serialized row index column `column00`.
-- **Causal Scaling:** Normalization (e.g. Robust or MinMax scaling) parameters must be fitted strictly on the training partition and applied causally to downstream data.
+- **Fit Isolation:** Preprocessing parameters (mean, standard deviation, minimum, maximum) are fitted exclusively on the `TRAIN` partition (`2020-02-01 00:00:00` to `2020-03-31 23:59:59`).
+- **Zero Leakage:** Under no circumstances is a scaler fitted separately on calibration or holdout data, nor on the full combined dataset.
+- **No Future Imputation:** Future observations must never be used to interpolate or fill missing history.
 - **Gap Isolation:** Timestamp differences $\Delta t$ must be evaluated sequentially to reset window buffers across service breaks ($>60\text{s}$).
+
+### Candidate Scaling Methods
+
+The choice of scaling method is not frozen intuition; candidate methods will be compared using training/calibration evidence (final holdout remains protected):
+
+1. **Standard Scaling ($Z$-Score):**
+   $$z = \frac{x - \mu_{\text{train}}}{\sigma_{\text{train}}}$$
+   Zero-centered, unit-variance representation. Sensitive to extreme outliers; preserves relative pneumatic scale.
+2. **Min-Max Scaling:**
+   $$\tilde{x} = \frac{x - \min_{\text{train}}}{\max_{\text{train}} - \min_{\text{train}}}$$
+   Bounds healthy training data into $[0, 1]$. Values during failure states may exceed $[0, 1]$, signaling departure from normal operating range.
+
+*Note:* Arbitrary clipping bounds are not implemented at this stage; out-of-range behavior will be assessed objectively during calibration.
 
 ## Model Requirements
 

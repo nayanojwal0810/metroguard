@@ -2,19 +2,22 @@
 
 ## Active objective
 
-Baseline input representation decision and decision-gate approval before preprocessing implementation.
+Baseline Sparse Autoencoder architecture and training pipeline specification under leakage-safe data contract.
 
 ## Current status
 
-Baseline design specification phase active:
-- Research and data audit complete: primary literature reviewed as background reference; unsupported secondary claims rejected from baseline definition.
-- Dataset integrity verified: `data/raw/MetroPT3(AirCompressor).csv` empirically verified (1,516,948 rows, 0 nulls, 0 duplicates, 4 ground-truth failure intervals).
-- Cadence verified: complete distribution across all 1,516,947 intervals reconciled (99.976% in 9–13s range; empirical ~10s nominal cadence).
-- Primary baseline feature direction approved (METROGUARD ENGINEERING DECISION): 7 continuous analogue sensors (`TP2`, `TP3`, `H1`, `DV_pressure`, `Reservoirs`, `Oil_temperature`, `Motor_current`). 15-sensor representation reserved for future ablation.
-- Temporal window candidate set defined: candidate set {6, 30, 90, 180} observations (~1m, ~5m, ~15m, ~30m) at nominal ~10s cadence under provisional causal gap-reset rule (Δt > 60s).
-- Baseline design document created: `docs/baseline_design.md`.
+Leakage-safe data foundation established:
+- Chronological evaluation boundaries approved (`DEC-009`):
+  - `TRAIN`: 2020-02-01 to 2020-03-31 (445,298 rows, healthy baseline)
+  - `CALIBRATION`: 2020-04-01 to 2020-05-31 (411,534 rows, 2 failure events)
+  - `FINAL HOLDOUT`: 2020-06-01 to 2020-08-31 (659,586 rows, 2 failure events, protected)
+  - `UNUSED TAIL`: 2020-09-01 (530 rows, excluded from primary evaluation)
+- Data contract created: `docs/data_contract.md` establishes schema, primary 7 analogue features, gap rules (Δt > 60s), and strict anti-leakage invariants.
+- Baseline design updated: `docs/baseline_design.md` incorporates full preprocessing flow, candidate scalers (StandardScaler, MinMaxScaler), and causal window rules.
+- Data ingestion and validation implemented: `src/data/contract.py`, `src/data/validator.py`, `src/data/windowing.py`, and `src/preprocessing/scalers.py`.
+- Unit test suite implemented: 16 unit tests passing across `tests/`, verifying schema checks, non-overlapping splits, gap resets, causal windowing, fit/transform separation, and anti-leakage invariant (future row cannot enter past window).
 - Model implementation has NOT started.
-- Exact window size, scaling method, model architecture, sparsity formulation, training parameters, threshold, and alert semantics remain open technical decisions.
+- Model architecture, window winner, scaler winner, threshold, and alert semantics remain open.
 
 ## Approved project direction
 
@@ -28,14 +31,13 @@ Baseline design specification phase active:
 
 ## Not yet frozen (Open Technical Decisions)
 
-- exact window size (from candidate set {6, 30, 90, 180});
-- scaling method and clipping boundaries;
+- exact window size winner (from candidate set {6, 30, 90, 180});
+- scaling method winner (StandardScaler vs MinMaxScaler);
 - SAE architecture (layer count, hidden unit dimensions, bottleneck size);
 - sparsity mechanism (L1 activity regularization vs KL divergence) and weight λ;
 - training configuration (optimizer, learning rate, batch size, epochs);
 - threshold selection method and value;
 - alert semantics (persistence K, smoothing, cooldown);
-- chronological train/calibration/holdout split dates;
 - cost function weights;
 - operating regime definition;
 - quality gating thresholds.

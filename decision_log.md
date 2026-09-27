@@ -208,25 +208,53 @@ The initial baseline sparse autoencoder and causal window preprocessing will ing
 
 ChatGPT / User
 
+### DEC-009 — Chronological evaluation boundaries and leakage-safe data contract
+
+**Status:** Approved
+
+**Decision**
+
+Partition the MetroPT-3 dataset strictly along non-overlapping chronological boundaries:
+- **TRAIN:** `2020-02-01 00:00:00` through `2020-03-31 23:59:59` (445,298 rows, 0 failure events);
+- **CALIBRATION:** `2020-04-01 00:00:00` through `2020-05-31 23:59:59` (411,534 rows, 2 failure events: April 18, May 29–30);
+- **FINAL HOLDOUT:** `2020-06-01 00:00:00` through `2020-08-31 23:59:59` (659,586 rows, 2 failure events: June 5–7, July 15);
+- **UNUSED PARTIAL TAIL:** `2020-09-01 00:00:00` through `2020-09-01 03:59:50` (530 rows, excluded from primary evaluation).
+
+Preprocessing scalers are fitted exclusively on `TRAIN`. Windows cannot cross split boundaries or service gaps ($\Delta t > 60\text{s}$).
+
+**Reason**
+
+Strict prevention of temporal data leakage. Guarantees a completely healthy 2-month baseline period for unsupervised model fitting, a 2-month realistic calibration period with ground-truth failure events for tuning window size and alert thresholds, and a protected 3-month holdout for forward-looking operational evaluation. The September 1 tail represents an incomplete partial day without a full diurnal cycle and is safely excluded from primary evaluation while remaining in the raw CSV.
+
+**Evidence**
+
+Dataset timestamp verification and failure interval audit documented in `docs/data_contract.md` and validated in unit tests.
+
+**Alternatives**
+
+- Random train/test split (strictly rejected as scientifically invalid and prone to extreme leakage).
+- Single train/test split without an intermediate calibration partition (rejected because threshold and window selection would either contaminate training or leak the holdout).
+
+**Impact**
+
+Data ingestion, scalers, and causal window construction enforce split boundaries with zero temporal leakage. Final holdout is strictly protected from model and threshold tuning.
+
+**Approved by**
+
+ChatGPT / User
+
 ---
 
 ## Reserved decisions
 
 Do not fill these from assumption. Record them only after evidence is available.
 
-- causal aggregation/window size (candidate set: 6, 30, 90, 180 observations);
-- train/calibration/holdout boundaries;
+- window size winner (from candidate set {6, 30, 90, 180});
+- scaling method winner (StandardScaler vs MinMaxScaler);
 - baseline architecture details (hidden layers, latent dimension);
-- baseline threshold method;
-- alert episode semantics;
-- cost objective and weights;
-- regime definition;
-- quality-gate thresholds;
-- monitoring thresholds;
-- retraining triggers;
-- serving/tracking stack.
-- baseline threshold method;
-- alert episode semantics;
+- sparsity mechanism (L1 vs KL) and regularization weight $\lambda$;
+- baseline threshold selection method and value;
+- alert episode semantics (persistence $K$, smoothing, cooldown);
 - cost objective and weights;
 - regime definition;
 - quality-gate thresholds;
