@@ -6,13 +6,13 @@
 
 MetroGuard is a production-style ML engineering project for turning compressor anomaly scores into defensible maintenance-alert decisions.
 
-The project is based on the Davari et al. DSAA 2021 sparse-autoencoder formulation and the UCI MetroPT-3 dataset.
+The project evaluates a sparse-autoencoder baseline formulation on the UCI MetroPT-3 dataset.
 
 ## Objective
 
 Build and evaluate a leakage-safe time-series anomaly detection system that:
 
-1. reproduces the research baseline faithfully;
+1. establishes a controlled sparse-autoencoder baseline;
 2. converts anomaly scores into an operational alert decision;
 3. tests cost-aware alerting;
 4. tests a small operating-regime-aware policy;
@@ -37,11 +37,9 @@ Operational states must include at least:
 - `ALERT`
 - `DATA_QUALITY_ISSUE`
 
-## Research foundation
+## Technical foundation
 
-Primary research:
-
-Davari, N., Veloso, B., Ribeiro, R. P., Pereira, P. M., & Gama, J. (2021), *Predictive maintenance based on anomaly detection using deep learning for air production unit in the railway industry*, DSAA 2021.
+Technical literature reviewed during design is cataloged in `docs/literature.md`.
 
 Primary dataset:
 
