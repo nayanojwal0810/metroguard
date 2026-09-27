@@ -4,7 +4,10 @@ MetroGuard is an operational early-warning system designed to detect anomalous c
 
 ## Implementation Status
 
-Repository setup and clean workspace preparation are complete. Implementation of the machine learning pipeline, feature engineering, and model training has not yet started.
+- **Leakage-Safe Data Foundation:** Implemented and tested. Enforces chronological splits (Train, Calibration, Holdout), causal windowing with service break isolation ($\Delta t > 60\text{s}$), and train-only preprocessing parameter fitting.
+- **Configurable Sparse Autoencoder:** Implemented and tested in PyTorch. Supports symmetric MLP architecture ($D \to H \to Z \to H \to D$), closed-form dimension scaling across candidate window sizes ($W \in \{6, 30, 90, 180\}$), and both L1 activity and KL divergence sparsity mechanisms.
+- **Test Suite:** 27 unit tests currently passing across schema validation, temporal monotonicity, split non-overlap, causal windowing, anti-leakage invariants, train-only scaler enforcement, and SAE model/loss mechanics.
+- **Experimental Status:** Model training and controlled baseline experiments have **NOT** yet started. No model performance, anomaly detection efficacy, or threshold values are claimed at this stage.
 
 ## Technical Architecture
 
