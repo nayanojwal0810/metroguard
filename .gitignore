@@ -1,0 +1,55 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches and environments
+.env
+.venv/
+env/
+venv/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Datasets and raw data
+data/raw/*.csv
+data/raw/*.parquet
+data/raw/*.feather
+data/raw/*.h5
+data/interim/
+data/processed/
+
+# Large checkpoints, model binaries, and serialized artifacts
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.bin
+*.pkl
+*.joblib
+artifacts/models/
+artifacts/checkpoints/
+
+# Temporary logs, system and editor files
+*.log
+logs/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Jupyter / Colab temporary caches
+.ipynb_checkpoints/
+colab_runs/
+runs/
+
+# Archives and bundles
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
