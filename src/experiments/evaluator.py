@@ -33,13 +33,15 @@ class CalibrationMetrics:
     num_failure_windows: int
     failure_ratio: float
     window_accounting: Dict[str, int]
-    pr_auc: Optional[float]
     roc_auc: Optional[float]
+    pr_auc_trapezoidal: Optional[float]
+    average_precision: Optional[float]
     normal_distribution: Dict[str, float]
     failure_distribution: Dict[str, float]
     event_distributions: Dict[str, Dict[str, float]]
     score_quantiles: Dict[str, float]
     labeling_convention: str = "window_end_timestamp"
+    pr_auc: Optional[float] = None  # Backward-compatible alias for pr_auc_trapezoidal
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert metrics to serializable dictionary."""
@@ -222,13 +224,15 @@ class CalibrationEvaluator:
                 num_failure_windows=0,
                 failure_ratio=0.0,
                 window_accounting=accounting_dict,
-                pr_auc=None,
                 roc_auc=None,
+                pr_auc_trapezoidal=None,
+                average_precision=None,
                 normal_distribution=compute_distribution_stats(np.array([])),
                 failure_distribution=compute_distribution_stats(np.array([])),
                 event_distributions={},
                 score_quantiles={},
                 labeling_convention="window_end_timestamp",
+                pr_auc=None,
             )
             return CalibrationResult(
                 metrics=empty_metrics,
@@ -285,19 +289,27 @@ class CalibrationEvaluator:
         n_failure = int(np.sum(failure_mask))
         failure_ratio = float(n_failure / n_usable) if n_usable > 0 else 0.0
 
-        # PR-AUC and ROC-AUC
-        pr_auc: Optional[float] = None
+        # PR-AUC (trapezoidal), Average Precision, and ROC-AUC
+        pr_auc_trapezoidal: Optional[float] = None
+        average_precision: Optional[float] = None
         roc_auc: Optional[float] = None
 
         if n_failure > 0 and n_normal > 0:
             try:
-                from sklearn.metrics import auc, precision_recall_curve, roc_auc_score
+                from sklearn.metrics import (
+                    auc,
+                    average_precision_score,
+                    precision_recall_curve,
+                    roc_auc_score,
+                )
 
                 precision, recall, _ = precision_recall_curve(labels, scores)
-                pr_auc = float(auc(recall, precision))
+                pr_auc_trapezoidal = float(auc(recall, precision))
+                average_precision = float(average_precision_score(labels, scores))
                 roc_auc = float(roc_auc_score(labels, scores))
             except Exception:
-                pr_auc = None
+                pr_auc_trapezoidal = None
+                average_precision = None
                 roc_auc = None
 
         # Event-level breakdown
@@ -315,13 +327,15 @@ class CalibrationEvaluator:
             num_failure_windows=n_failure,
             failure_ratio=failure_ratio,
             window_accounting=accounting_dict,
-            pr_auc=pr_auc,
             roc_auc=roc_auc,
+            pr_auc_trapezoidal=pr_auc_trapezoidal,
+            average_precision=average_precision,
             normal_distribution=compute_distribution_stats(normal_scores),
             failure_distribution=compute_distribution_stats(failure_scores),
             event_distributions=event_distributions,
             score_quantiles=compute_quantiles(scores),
             labeling_convention="window_end_timestamp",
+            pr_auc=pr_auc_trapezoidal,
         )
 
         return CalibrationResult(

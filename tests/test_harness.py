@@ -507,3 +507,86 @@ def test_baseline_synthetic_pipeline_execution(tmp_path: Path) -> None:
     assert result.metadata["train_val_raw_row_count"] == 10
     assert result.metadata["holdout_observations_retained"] is False
     assert (tmp_path / "baseline_w30_standard_l1_s42.json").exists()
+
+
+def test_training_history_full_epoch_serialization(tmp_path: Path) -> None:
+    """Verify that complete epoch-by-epoch training history is serialized into artifact JSON."""
+    from src.experiments.trainer import EpochMetrics, TrainingHistory
+
+    history = TrainingHistory(epochs_trained=2, best_epoch=1, best_loss=0.045, early_stopped=False)
+    m1 = EpochMetrics(
+        epoch=1,
+        train_total_loss=0.050,
+        train_recon_loss=0.048,
+        train_sparsity_loss=0.002,
+        val_total_loss=0.045,
+        val_recon_loss=0.043,
+    )
+    m2 = EpochMetrics(
+        epoch=2,
+        train_total_loss=0.040,
+        train_recon_loss=0.038,
+        train_sparsity_loss=0.002,
+        val_total_loss=0.046,
+        val_recon_loss=0.044,
+    )
+    history.history.extend([m1, m2])
+
+    hist_dict = history.to_dict()
+
+    # Verify summary fields preserved
+    assert hist_dict["epochs_trained"] == 2
+    assert hist_dict["best_epoch"] == 1
+    assert hist_dict["best_loss"] == 0.045
+    assert hist_dict["early_stopped"] is False
+    assert hist_dict["final_train_total_loss"] == 0.040
+    assert hist_dict["final_train_recon_loss"] == 0.038
+    assert hist_dict["final_train_sparsity_loss"] == 0.002
+    assert hist_dict["final_val_total_loss"] == 0.046
+
+    # Verify complete epoch-by-epoch list serialized
+    assert "epochs" in hist_dict
+    assert len(hist_dict["epochs"]) == 2
+    assert hist_dict["epochs"][0]["epoch"] == 1
+    assert hist_dict["epochs"][0]["train_total_loss"] == 0.050
+    assert hist_dict["epochs"][0]["train_recon_loss"] == 0.048
+    assert hist_dict["epochs"][0]["train_sparsity_loss"] == 0.002
+    assert hist_dict["epochs"][0]["val_total_loss"] == 0.045
+    assert hist_dict["epochs"][0]["val_recon_loss"] == 0.043
+
+    assert hist_dict["epochs"][1]["epoch"] == 2
+    assert hist_dict["epochs"][1]["train_total_loss"] == 0.040
+
+
+def test_calibration_metric_naming_and_calculation() -> None:
+    """Verify that CalibrationEvaluator records both pr_auc_trapezoidal and average_precision."""
+    from src.experiments.evaluator import CalibrationEvaluator
+    from src.models.sae import SparseAutoencoder
+    from src.preprocessing.scalers import StandardScaler
+
+    model = SparseAutoencoder(input_dim=42, hidden_dim=32, latent_dim=16)
+    scaler = StandardScaler(features=PRIMARY_FEATURES)
+    scaler.fit(np.zeros((10, 7), dtype=np.float32))
+
+    evaluator = CalibrationEvaluator(model=model, scaler=scaler)
+
+    # Synthetic windows: 50 normal, 10 during Event 1 (2020-04-18)
+    ts_normal = pd.date_range("2020-04-10", periods=50, freq="10s")
+    ts_event = pd.date_range("2020-04-18 01:00:00", periods=10, freq="10s")
+    timestamps = np.concatenate([ts_normal.values, ts_event.values])
+    windows = np.random.randn(60, 6, 7).astype(np.float32)
+
+    res = evaluator.evaluate(cal_windows=windows, cal_timestamps=timestamps)
+    m = res.metrics
+
+    # Verify both metrics are present and bounded [0, 1]
+    assert m.roc_auc is not None and 0.0 <= m.roc_auc <= 1.0
+    assert m.pr_auc_trapezoidal is not None and 0.0 <= m.pr_auc_trapezoidal <= 1.0
+    assert m.average_precision is not None and 0.0 <= m.average_precision <= 1.0
+    # Backward compatibility alias
+    assert m.pr_auc == m.pr_auc_trapezoidal
+
+    d = m.to_dict()
+    assert "pr_auc_trapezoidal" in d
+    assert "average_precision" in d
+    assert "roc_auc" in d

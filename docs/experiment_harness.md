@@ -127,14 +127,23 @@ Documented Calibration Events:
 
 ---
 
-## 7. Dataset Provenance
+## 7. Calibration Ranking Metrics
+
+To avoid ambiguity in Precision-Recall evaluation under severe class imbalance:
+- **`average_precision`**: Average Precision calculated via `sklearn.metrics.average_precision_score(labels, scores)`, corresponding to area under the precision-recall curve with step-wise constant interpolation ($AP = \sum_n (R_n - R_{n-1}) P_n$). For an uninformative random ranking, the expected value asymptotically equals positive class prevalence.
+- **`pr_auc_trapezoidal`**: Calculated via `sklearn.metrics.auc(recall, precision)` over points from `precision_recall_curve`. Linear trapezoidal interpolation connects operating points with straight lines and can overestimate true PR area. Therefore, comparing trapezoidal PR-AUC directly to positive class prevalence as a literal linear multiplier is unsupported.
+- **`roc_auc`**: Area under the Receiver Operating Characteristic curve computed via `sklearn.metrics.roc_auc_score(labels, scores)`.
+
+---
+
+## 8. Dataset Provenance
 
 - **Real MetroPT-3 Runs**: `dataset_fingerprint = "db30ccb4ea402e3c8bf2c99db06e288d4f2a772f6928f9dbe26a920d69793e24"`
 - **Synthetic / Smoke Runs**: `dataset_fingerprint = "synthetic_experiment_dataset"`
 
 ---
 
-## 8. Usage Commands
+## 9. Usage Commands
 
 ```bash
 # Run lightweight synthetic smoke test (< 5 seconds on CPU)

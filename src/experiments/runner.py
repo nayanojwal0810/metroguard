@@ -600,8 +600,10 @@ def run_smoke_test(verbose: bool = True) -> ExperimentResult:
         print(f"Window accounting: {m.window_accounting}")
         print(f"Normal mean recon error: {m.normal_distribution.get('mean', 0.0):.6f}")
         print(f"Failure mean recon error: {m.failure_distribution.get('mean', 0.0):.6f}")
-        if m.pr_auc is not None:
-            print(f"PR-AUC (synthetic verification): {m.pr_auc:.4f}")
+        if m.pr_auc_trapezoidal is not None:
+            print(f"PR-AUC (trapezoidal, synthetic verification): {m.pr_auc_trapezoidal:.4f}")
+        if m.average_precision is not None:
+            print(f"Average Precision (synthetic verification): {m.average_precision:.4f}")
         if m.roc_auc is not None:
             print(f"ROC-AUC (synthetic verification): {m.roc_auc:.4f}")
         print(f"Runtime: {result.metadata['runtime_seconds']}s")
@@ -704,8 +706,10 @@ def run_baseline(
             f"Calibration Normal Windows: {m.num_normal_windows:,} | "
             f"Failure Windows: {m.num_failure_windows:,}"
         )
-        if m.pr_auc is not None:
-            print(f"Calibration PR-AUC: {m.pr_auc:.6f}")
+        if m.pr_auc_trapezoidal is not None:
+            print(f"Calibration PR-AUC (trapezoidal): {m.pr_auc_trapezoidal:.6f}")
+        if m.average_precision is not None:
+            print(f"Calibration Average Precision: {m.average_precision:.6f}")
         if m.roc_auc is not None:
             print(f"Calibration ROC-AUC: {m.roc_auc:.6f}")
         print(f"Normal Mean Score: {m.normal_distribution.get('mean', 0.0):.6f}")

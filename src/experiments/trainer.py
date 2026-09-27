@@ -1,6 +1,6 @@
 """Leakage-safe training loop for Sparse Autoencoder baseline models."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import random
 from typing import Any, Dict, List, Optional
 import numpy as np
@@ -20,6 +20,10 @@ class EpochMetrics:
     train_sparsity_loss: float
     val_total_loss: Optional[float] = None
     val_recon_loss: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert epoch metrics to serializable dictionary."""
+        return asdict(self)
 
 
 @dataclass
@@ -51,6 +55,7 @@ class TrainingHistory:
             "final_val_total_loss": (
                 self.history[-1].val_total_loss if self.history else None
             ),
+            "epochs": [m.to_dict() for m in self.history],
         }
 
 
