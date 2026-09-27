@@ -19,6 +19,7 @@ from src.data.contract import (
     FailureEvent,
     SplitPartition,
 )
+from src.data.windowing import WindowAccounting
 from src.models.sae import SparseAutoencoder
 from src.preprocessing.scalers import BaseScaler, MinMaxScaler, StandardScaler
 
@@ -28,16 +29,17 @@ class CalibrationMetrics:
     """Threshold-free performance and distribution metrics on CALIBRATION data."""
 
     num_usable_windows: int
-    num_rejected_windows: int
     num_normal_windows: int
     num_failure_windows: int
     failure_ratio: float
+    window_accounting: Dict[str, int]
     pr_auc: Optional[float]
     roc_auc: Optional[float]
     normal_distribution: Dict[str, float]
     failure_distribution: Dict[str, float]
     event_distributions: Dict[str, Dict[str, float]]
     score_quantiles: Dict[str, float]
+    labeling_convention: str = "window_end_timestamp"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert metrics to serializable dictionary."""
@@ -131,8 +133,16 @@ class CalibrationEvaluator:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Map window evaluation timestamps to binary labels and failure event identifiers.
 
+        Authoritative Labeling Convention:
+        A window is labelled strictly according to its evaluation/end timestamp t:
+        - If event.start <= t <= event.end: label = 1 (failure), event_id = event.event_id
+        - If t < event.start (before event): label = 0 (normal), event_id = 'normal'
+        - If t > event.end (after event): label = 0 (normal), event_id = 'normal'
+        The window's historical context [t - W + 1, t - 1] does not alter this label.
+
         Args:
-            timestamps: Array of datetime64 or pd.Timestamp values.
+            timestamps: Array of datetime64 or pd.Timestamp values representing
+                window end evaluation points.
 
         Returns:
             Tuple of (labels, event_ids) where labels is 1D int array and event_ids is 1D string array.
@@ -158,6 +168,7 @@ class CalibrationEvaluator:
         self,
         cal_windows: np.ndarray,
         cal_timestamps: np.ndarray,
+        window_accounting: Optional[Union[WindowAccounting, Dict[str, int]]] = None,
         num_calibration_rows: Optional[int] = None,
         batch_size: int = 512,
     ) -> CalibrationResult:
@@ -172,8 +183,8 @@ class CalibrationEvaluator:
         Args:
             cal_windows: 3D numpy array of shape (N, W, D_features) or 2D (N, D_flat).
             cal_timestamps: 1D array of window end timestamps, length N.
-            num_calibration_rows: Total raw observation rows in calibration partition,
-                used to calculate rejected window count (num_rows - N).
+            window_accounting: WindowAccounting object or dictionary from window builder.
+            num_calibration_rows: Total raw observation rows in calibration partition (fallback).
             batch_size: Batch size for model inference.
 
         Returns:
@@ -186,25 +197,38 @@ class CalibrationEvaluator:
             )
 
         n_usable = len(cal_windows)
-        n_rejected = (
-            max(0, num_calibration_rows - n_usable)
-            if num_calibration_rows is not None
-            else 0
-        )
+
+        if window_accounting is not None:
+            if hasattr(window_accounting, "to_dict"):
+                accounting_dict = window_accounting.to_dict()
+            else:
+                accounting_dict = dict(window_accounting)
+        else:
+            n_raw = num_calibration_rows if num_calibration_rows is not None else n_usable
+            accounting_dict = {
+                "num_observations": n_raw,
+                "num_candidate_endpoints": n_raw,
+                "num_usable_windows": n_usable,
+                "num_excluded_insufficient_history": 0,
+                "num_excluded_service_gap": 0,
+                "num_excluded_split_boundary": 0,
+                "num_excluded_out_of_bounds": 0,
+            }
 
         if n_usable == 0:
             empty_metrics = CalibrationMetrics(
                 num_usable_windows=0,
-                num_rejected_windows=n_rejected,
                 num_normal_windows=0,
                 num_failure_windows=0,
                 failure_ratio=0.0,
+                window_accounting=accounting_dict,
                 pr_auc=None,
                 roc_auc=None,
                 normal_distribution=compute_distribution_stats(np.array([])),
                 failure_distribution=compute_distribution_stats(np.array([])),
                 event_distributions={},
                 score_quantiles={},
+                labeling_convention="window_end_timestamp",
             )
             return CalibrationResult(
                 metrics=empty_metrics,
@@ -287,16 +311,17 @@ class CalibrationEvaluator:
 
         metrics = CalibrationMetrics(
             num_usable_windows=n_usable,
-            num_rejected_windows=n_rejected,
             num_normal_windows=n_normal,
             num_failure_windows=n_failure,
             failure_ratio=failure_ratio,
+            window_accounting=accounting_dict,
             pr_auc=pr_auc,
             roc_auc=roc_auc,
             normal_distribution=compute_distribution_stats(normal_scores),
             failure_distribution=compute_distribution_stats(failure_scores),
             event_distributions=event_distributions,
             score_quantiles=compute_quantiles(scores),
+            labeling_convention="window_end_timestamp",
         )
 
         return CalibrationResult(

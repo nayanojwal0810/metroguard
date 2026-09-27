@@ -1,7 +1,7 @@
 """Causal window construction enforcing gap rules, split boundaries, and zero temporal leakage."""
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
@@ -16,6 +16,31 @@ from src.data.validator import assign_split
 
 
 @dataclass(frozen=True)
+class WindowAccounting:
+    """Explicit deterministic accounting of observations and window endpoints."""
+
+    num_observations: int
+    num_candidate_endpoints: int
+    num_usable_windows: int
+    num_excluded_insufficient_history: int  # Initial sequence or sub-segment before W observations
+    num_excluded_service_gap: int          # Service gap (delta_t > 60s) within window
+    num_excluded_split_boundary: int       # Window would cross split partition boundary
+    num_excluded_out_of_bounds: int        # Observation itself is OUT_OF_BOUNDS
+
+    def to_dict(self) -> Dict[str, int]:
+        """Convert accounting to dictionary."""
+        return {
+            "num_observations": self.num_observations,
+            "num_candidate_endpoints": self.num_candidate_endpoints,
+            "num_usable_windows": self.num_usable_windows,
+            "num_excluded_insufficient_history": self.num_excluded_insufficient_history,
+            "num_excluded_service_gap": self.num_excluded_service_gap,
+            "num_excluded_split_boundary": self.num_excluded_split_boundary,
+            "num_excluded_out_of_bounds": self.num_excluded_out_of_bounds,
+        }
+
+
+@dataclass(frozen=True)
 class WindowBatch:
     """Container for constructed causal windows and associated metadata."""
 
@@ -25,6 +50,7 @@ class WindowBatch:
     window_size: int
     stride: int
     feature_names: Tuple[str, ...]
+    accounting: Optional[WindowAccounting] = None
 
 
 class CausalWindowBuilder:
@@ -83,6 +109,15 @@ class CausalWindowBuilder:
                 window_size=self.window_size,
                 stride=self.stride,
                 feature_names=self.features,
+                accounting=WindowAccounting(
+                    num_observations=0,
+                    num_candidate_endpoints=0,
+                    num_usable_windows=0,
+                    num_excluded_insufficient_history=0,
+                    num_excluded_service_gap=0,
+                    num_excluded_split_boundary=0,
+                    num_excluded_out_of_bounds=0,
+                ),
             )
 
         # Ensure timestamp is datetime and features are extracted
@@ -95,26 +130,27 @@ class CausalWindowBuilder:
         # Compute consecutive timestamp deltas in seconds
         deltas = ts.diff().dt.total_seconds().fillna(0.0).to_numpy()
 
-        # Identify boundary resets:
+        # Identify boundary resets and classify causes:
         # A reset occurs at index j if:
         # 1. j == 0 (start of series)
         # 2. deltas[j] > max_gap_seconds (service gap)
         # 3. partitions[j] != partitions[j - 1] (split boundary transition)
         # 4. partitions[j] == OUT_OF_BOUNDS (unassigned data)
         n_rows = len(df)
-        reset_mask = np.zeros(n_rows, dtype=bool)
-        reset_mask[0] = True
+        reset_cause = np.zeros(n_rows, dtype=object)
+        reset_cause[0] = "start_of_series"
 
-        # Telemetry gaps
-        reset_mask[deltas > self.max_gap_seconds] = True
+        is_gap = deltas > self.max_gap_seconds
+        reset_cause[is_gap] = "service_gap"
 
-        # Split boundary transitions
-        split_changed = partitions[1:] != partitions[:-1]
-        reset_mask[1:][split_changed] = True
+        split_changed = np.zeros(n_rows, dtype=bool)
+        split_changed[1:] = partitions[1:] != partitions[:-1]
+        reset_cause[split_changed] = "split_boundary"
 
-        # Exclude out-of-bounds rows from forming valid segments
         is_oob = partitions == SplitPartition.OUT_OF_BOUNDS.value
-        reset_mask[is_oob] = True
+        reset_cause[is_oob] = "out_of_bounds"
+
+        reset_mask = reset_cause != 0
 
         # Calculate segment start index for each row
         # Segment start is the most recent reset index at or before i
@@ -125,14 +161,45 @@ class CausalWindowBuilder:
                 current_start = i
             segment_starts[i] = current_start
 
-        # A window ending at index i covering [i - W + 1, i] is valid if:
-        # 1. i - W + 1 >= segment_starts[i] (no reset within window)
-        # 2. partitions[i] != OUT_OF_BOUNDS
+        # Explicit candidate endpoint evaluation and exclusion categorization
+        window_endpoints = list(range(self.window_size - 1, n_rows, self.stride))
+        initial_insufficient = min(n_rows, self.window_size - 1)
+
+        n_insufficient_history = initial_insufficient
+        n_service_gap = 0
+        n_split_boundary = 0
+        n_out_of_bounds = 0
         valid_end_indices: List[int] = []
-        for i in range(self.window_size - 1, n_rows, self.stride):
+
+        for i in window_endpoints:
+            if is_oob[i]:
+                n_out_of_bounds += 1
+                continue
+
             start_idx = i - self.window_size + 1
-            if start_idx >= segment_starts[i] and not is_oob[i]:
+            if start_idx < segment_starts[i]:
+                cause = reset_cause[segment_starts[i]]
+                if cause == "service_gap":
+                    n_service_gap += 1
+                elif cause == "split_boundary":
+                    n_split_boundary += 1
+                elif cause == "out_of_bounds":
+                    n_out_of_bounds += 1
+                else:
+                    n_insufficient_history += 1
+            else:
                 valid_end_indices.append(i)
+
+        n_candidate = len(window_endpoints) + initial_insufficient
+        accounting = WindowAccounting(
+            num_observations=n_rows,
+            num_candidate_endpoints=n_candidate,
+            num_usable_windows=len(valid_end_indices),
+            num_excluded_insufficient_history=n_insufficient_history,
+            num_excluded_service_gap=n_service_gap,
+            num_excluded_split_boundary=n_split_boundary,
+            num_excluded_out_of_bounds=n_out_of_bounds,
+        )
 
         if not valid_end_indices:
             return WindowBatch(
@@ -142,6 +209,7 @@ class CausalWindowBuilder:
                 window_size=self.window_size,
                 stride=self.stride,
                 feature_names=self.features,
+                accounting=accounting,
             )
 
         # Slice 3D array of windows: shape (num_windows, window_size, num_features)
@@ -165,4 +233,5 @@ class CausalWindowBuilder:
             window_size=self.window_size,
             stride=self.stride,
             feature_names=self.features,
+            accounting=accounting,
         )

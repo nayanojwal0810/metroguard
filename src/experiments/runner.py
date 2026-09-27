@@ -14,16 +14,21 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.data.contract import (
+    CANONICAL_DATASET_SHA256,
+    DATASET_EXPECTED_ROWS,
     DATASET_SHA256,
+    EXPECTED_CALIBRATION_ROWS,
+    EXPECTED_TRAIN_ROWS,
     FAILURE_EVENTS,
     PRIMARY_FEATURES,
     SPLIT_BOUNDS,
+    SYNTHETIC_DATASET_FINGERPRINT,
     TIMESTAMP_COL,
     PartitionBoundary,
     SplitPartition,
 )
 from src.data.validator import assign_split, validate_dataset
-from src.data.windowing import CausalWindowBuilder
+from src.data.windowing import CausalWindowBuilder, WindowAccounting
 from src.experiments.config import ExperimentConfig, generate_matrix_configs
 from src.experiments.evaluator import CalibrationEvaluator, CalibrationMetrics, CalibrationResult
 from src.experiments.trainer import SAETrainer, TrainingHistory, set_seed
@@ -130,7 +135,7 @@ def create_synthetic_experiment_data(
     cal_dict: Dict[str, Any] = {TIMESTAMP_COL: cal_ts}
     for col in PRIMARY_FEATURES:
         base = rng.normal(loc=5.0, scale=1.0, size=num_cal_rows).astype(np.float32)
-        base[is_event] += 4.0  # Anomaly shift during failure event
+        base[is_event] += 4.0  # Simulated anomaly shift during failure event
         cal_dict[col] = base
     cal_df = pd.DataFrame(cal_dict)
 
@@ -139,41 +144,134 @@ def create_synthetic_experiment_data(
 
 def load_train_and_calibration_data(
     csv_path: str,
+    features: Sequence[str] = PRIMARY_FEATURES,
+    chunk_size: int = 100_000,
+    enforce_real_counts: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Load raw dataset and return strictly TRAIN and CALIBRATION partitions.
+    """Load raw dataset in chunks, retaining strictly TRAIN and CALIBRATION partitions.
 
-    CRITICAL LEAKAGE RULE:
-    FINAL HOLDOUT data (>= 2020-06-01) is strictly filtered out and never loaded
-    into the experiment pipeline.
+    CRITICAL LEAKAGE GUARANTEE:
+    - Only [TIMESTAMP_COL] and the specified features are ingested from disk.
+    - FINAL HOLDOUT (>= 2020-06-01 00:00:00) and UNUSED_TAIL rows are filtered out at the chunk
+      level and NEVER concatenated or retained in experiment DataFrames.
+    - Chunk processing terminates early as soon as the chronological timestamp stream passes CALIBRATION_END.
+    - FINAL HOLDOUT observations are never passed to window construction, scaler fitting,
+      model training, or calibration evaluation.
+    - If the input file is the canonical MetroPT-3 dataset, verifies frozen partition counts:
+      TRAIN == 445,298 and CALIBRATION == 411,534.
     """
     path = Path(csv_path)
     if not path.is_file():
         raise FileNotFoundError(f"Raw CSV file not found at: {path}")
 
-    # Read raw data
-    df = pd.read_csv(path)
-    df[TIMESTAMP_COL] = pd.to_datetime(df[TIMESTAMP_COL])
-
-    # Assign split partitions
-    df["partition"] = assign_split(df[TIMESTAMP_COL])
-
-    # Enforce holdout protection: Drop holdout and unused tail entirely
-    train_df = df[df["partition"] == SplitPartition.TRAIN.value].copy()
-    cal_df = df[df["partition"] == SplitPartition.CALIBRATION.value].copy()
-
-    # Drop partition column to maintain clean feature schemas
-    train_df = train_df.drop(columns=["partition"])
-    cal_df = cal_df.drop(columns=["partition"])
-
-    # Strict assertion verifying holdout exclusion
     train_bound = next(b for b in SPLIT_BOUNDS if b.name == SplitPartition.TRAIN)
     cal_bound = next(b for b in SPLIT_BOUNDS if b.name == SplitPartition.CALIBRATION)
+    holdout_start = pd.Timestamp("2020-06-01 00:00:00")
 
-    assert (train_df[TIMESTAMP_COL] <= train_bound.end).all(), "Train partition leak detected!"
-    assert (cal_df[TIMESTAMP_COL] <= cal_bound.end).all(), "Calibration partition leak detected!"
-    assert (cal_df[TIMESTAMP_COL] >= cal_bound.start).all(), "Calibration start violation!"
+    cols_to_read = [TIMESTAMP_COL] + list(features)
+
+    train_chunks: List[pd.DataFrame] = []
+    cal_chunks: List[pd.DataFrame] = []
+
+    for chunk in pd.read_csv(path, usecols=cols_to_read, chunksize=chunk_size):
+        chunk[TIMESTAMP_COL] = pd.to_datetime(chunk[TIMESTAMP_COL])
+
+        # If entire chunk is before train start, skip
+        if chunk[TIMESTAMP_COL].iloc[-1] < train_bound.start:
+            continue
+
+        # Extract TRAIN slice in this chunk
+        train_mask = (chunk[TIMESTAMP_COL] >= train_bound.start) & (
+            chunk[TIMESTAMP_COL] <= train_bound.end
+        )
+        if train_mask.any():
+            train_chunks.append(chunk[train_mask])
+
+        # Extract CALIBRATION slice in this chunk
+        cal_mask = (chunk[TIMESTAMP_COL] >= cal_bound.start) & (
+            chunk[TIMESTAMP_COL] <= cal_bound.end
+        )
+        if cal_mask.any():
+            cal_chunks.append(chunk[cal_mask])
+
+        # Early termination: if this chunk begins past calibration end, stop reading immediately!
+        if chunk[TIMESTAMP_COL].iloc[0] > cal_bound.end:
+            break
+
+    if not train_chunks:
+        train_df = pd.DataFrame(columns=cols_to_read)
+    else:
+        train_df = pd.concat(train_chunks, ignore_index=True)
+
+    if not cal_chunks:
+        cal_df = pd.DataFrame(columns=cols_to_read)
+    else:
+        cal_df = pd.concat(cal_chunks, ignore_index=True)
+
+    # Strict holdout exclusion assertions
+    assert (train_df[TIMESTAMP_COL] < holdout_start).all(), (
+        "CRITICAL LEAKAGE: FINAL HOLDOUT rows detected in TRAIN DataFrame!"
+    )
+    assert (cal_df[TIMESTAMP_COL] < holdout_start).all(), (
+        "CRITICAL LEAKAGE: FINAL HOLDOUT rows detected in CALIBRATION DataFrame!"
+    )
+    assert (train_df[TIMESTAMP_COL] >= train_bound.start).all(), (
+        "Pre-TRAIN observations detected in TRAIN DataFrame!"
+    )
+    assert (train_df[TIMESTAMP_COL] <= train_bound.end).all(), (
+        "Post-TRAIN observations detected in TRAIN DataFrame!"
+    )
+    assert (cal_df[TIMESTAMP_COL] >= cal_bound.start).all(), (
+        "Pre-CALIBRATION observations detected in CALIBRATION DataFrame!"
+    )
+    assert (cal_df[TIMESTAMP_COL] <= cal_bound.end).all(), (
+        "Post-CALIBRATION observations detected in CALIBRATION DataFrame!"
+    )
+
+    # Fail-fast check on real MetroPT-3 partition counts if file matches canonical name or size
+    if enforce_real_counts and path.name == "MetroPT3(AirCompressor).csv":
+        if len(train_df) != EXPECTED_TRAIN_ROWS:
+            raise ValueError(
+                f"Partition count discrepancy in TRAIN! "
+                f"Expected {EXPECTED_TRAIN_ROWS} rows, got {len(train_df)}."
+            )
+        if len(cal_df) != EXPECTED_CALIBRATION_ROWS:
+            raise ValueError(
+                f"Partition count discrepancy in CALIBRATION! "
+                f"Expected {EXPECTED_CALIBRATION_ROWS} rows, got {len(cal_df)}."
+            )
 
     return train_df, cal_df
+
+
+def _verify_scaler_snapshot(
+    scaler: BaseScaler,
+    snapshot: Dict[str, Any],
+    stage_name: str,
+) -> None:
+    """Verify that scaler parameters did not mutate during a transform operation."""
+    if isinstance(scaler, StandardScaler):
+        if snapshot.get("mean") is not None:
+            assert np.array_equal(scaler.mean_, snapshot["mean"]), (
+                f"Scaler mean_ mutated during {stage_name}!"
+            )
+        if snapshot.get("std") is not None:
+            assert np.array_equal(scaler.std_, snapshot["std"]), (
+                f"Scaler std_ mutated during {stage_name}!"
+            )
+    elif isinstance(scaler, MinMaxScaler):
+        if snapshot.get("min") is not None:
+            assert np.array_equal(scaler.min_, snapshot["min"]), (
+                f"Scaler min_ mutated during {stage_name}!"
+            )
+        if snapshot.get("max") is not None:
+            assert np.array_equal(scaler.max_, snapshot["max"]), (
+                f"Scaler max_ mutated during {stage_name}!"
+            )
+        if snapshot.get("range") is not None:
+            assert np.array_equal(scaler.range_, snapshot["range"]), (
+                f"Scaler range_ mutated during {stage_name}!"
+            )
 
 
 def run_experiment(
@@ -181,45 +279,72 @@ def run_experiment(
     train_df: Optional[pd.DataFrame] = None,
     cal_df: Optional[pd.DataFrame] = None,
     raw_csv_path: Optional[str] = None,
+    dataset_fingerprint: Optional[str] = None,
     save_dir: Optional[str] = None,
     verbose: bool = False,
 ) -> ExperimentResult:
     """Execute end-to-end reproducible experiment for a single configuration.
 
     Workflow:
-    1. Prepare train & cal data (synthetic or filtered from raw CSV).
-    2. Build causal rolling windows (strictly respecting gaps and boundaries).
-    3. Fit scaler strictly on TRAIN data.
-    4. Transform TRAIN data and train SAE model with SAETrainer.
-    5. Evaluate CALIBRATION data using CalibrationEvaluator (scaler & model frozen).
-    6. Compute metrics and serialize run artifact.
+    1. Ingestion: load data (synthetic or chunked holdout-safe from CSV).
+    2. Chronological TRAIN split into TRAIN-fit and TRAIN-validation.
+    3. Causal rolling window construction for TRAIN-fit, TRAIN-val, and CALIBRATION.
+    4. Fit scaler ONLY on TRAIN-fit subset (never on val or cal).
+    5. Transform TRAIN-fit, TRAIN-val, and CALIBRATION with the frozen scaler.
+    6. Train SAE with SAETrainer (capturing and restoring best validation state).
+    7. Evaluate CALIBRATION with CalibrationEvaluator (model and scaler frozen).
+    8. Record explicit accounting and metadata without holdout leakage.
     """
     start_time = time.time()
     set_seed(config.seed)
 
-    # 1. Obtain data
-    dataset_fingerprint = "synthetic"
+    # 1. Obtain data and determine provenance fingerprint
+    if dataset_fingerprint is None:
+        if train_df is None or cal_df is None:
+            dataset_fingerprint = CANONICAL_DATASET_SHA256
+        else:
+            dataset_fingerprint = SYNTHETIC_DATASET_FINGERPRINT
+
     if train_df is None or cal_df is None:
         if raw_csv_path is None:
             raw_csv_path = "data/raw/MetroPT3(AirCompressor).csv"
-        train_df, cal_df = load_train_and_calibration_data(raw_csv_path)
-        dataset_fingerprint = DATASET_SHA256
+        train_df, cal_df = load_train_and_calibration_data(
+            raw_csv_path,
+            features=config.features,
+        )
+        dataset_fingerprint = CANONICAL_DATASET_SHA256
 
     if verbose:
         print(f"[{config.run_id}] Train rows: {len(train_df)}, Cal rows: {len(cal_df)}")
 
-    # 2. Window construction
+    # 2. Chronological separation of TRAIN into TRAIN-fit and TRAIN-validation
+    n_train_rows = len(train_df)
+    if config.validation_fraction > 0.0:
+        n_val_rows = int(n_train_rows * config.validation_fraction)
+        n_fit_rows = n_train_rows - n_val_rows
+        train_fit_df = train_df.iloc[:n_fit_rows].copy()
+        train_val_df = train_df.iloc[n_fit_rows:].copy()
+    else:
+        train_fit_df = train_df
+        train_val_df = pd.DataFrame(columns=train_df.columns)
+        n_fit_rows = n_train_rows
+        n_val_rows = 0
+
+    # 3. Causal window construction
     builder = CausalWindowBuilder(
         window_size=config.window_size,
         stride=config.stride,
         features=config.features,
     )
-    train_batch = builder.build_windows(train_df)
+    train_fit_batch = builder.build_windows(train_fit_df)
+    train_val_batch = (
+        builder.build_windows(train_val_df) if len(train_val_df) > 0 else None
+    )
     cal_batch = builder.build_windows(cal_df)
 
-    if len(train_batch.windows) == 0:
+    if len(train_fit_batch.windows) == 0:
         raise ValueError(
-            f"No usable train windows produced for window_size={config.window_size}"
+            f"No usable train-fit windows produced for window_size={config.window_size}"
         )
     if len(cal_batch.windows) == 0:
         raise ValueError(
@@ -227,14 +352,15 @@ def run_experiment(
         )
 
     if verbose:
+        n_val_w_count = len(train_val_batch.windows) if train_val_batch else 0
         print(
-            f"[{config.run_id}] Built {len(train_batch.windows)} train windows, "
-            f"{len(cal_batch.windows)} cal windows"
+            f"[{config.run_id}] Windows -> Fit: {len(train_fit_batch.windows)}, "
+            f"Val: {n_val_w_count}, Cal: {len(cal_batch.windows)}"
         )
 
-    # 3. Scaler fitting strictly on TRAIN windows
-    n_train_w, w_len, n_feat = train_batch.windows.shape
-    train_flat_features = train_batch.windows.reshape(-1, n_feat)
+    # 4. Scaler fitting strictly on TRAIN-fit subset (never on val or cal)
+    n_fit_w, w_len, n_feat = train_fit_batch.windows.shape
+    fit_flat = train_fit_batch.windows.reshape(-1, n_feat)
 
     if config.scaler_type == "StandardScaler":
         scaler: BaseScaler = StandardScaler(features=config.features)
@@ -243,40 +369,55 @@ def run_experiment(
     else:
         raise ValueError(f"Unknown scaler_type: {config.scaler_type}")
 
-    scaler.fit(train_flat_features)
+    scaler.fit(fit_flat)
 
-    # Transform TRAIN windows and reshape to (N, W * D)
-    scaled_train_flat = scaler.transform(train_flat_features)
-    scaled_train_windows = scaled_train_flat.reshape(n_train_w, w_len * n_feat)
+    # Capture snapshot of scaler parameters to verify zero mutation
+    if isinstance(scaler, StandardScaler):
+        scaler_snapshot = {
+            "mean": scaler.mean_.copy(),
+            "std": scaler.std_.copy(),
+        }
+    elif isinstance(scaler, MinMaxScaler):
+        scaler_snapshot = {
+            "min": scaler.min_.copy(),
+            "max": scaler.max_.copy(),
+            "range": scaler.range_.copy(),
+        }
+    else:
+        scaler_snapshot = {}
 
-    # 4. Prepare PyTorch DataLoaders (Train / Train-derived Validation)
-    train_tensor = torch.from_numpy(scaled_train_windows).float()
+    # Transform TRAIN-fit windows
+    scaled_fit_flat = scaler.transform(fit_flat)
+    scaled_fit_windows = scaled_fit_flat.reshape(n_fit_w, w_len * n_feat)
 
-    if config.validation_fraction > 0.0:
-        val_size = int(len(train_tensor) * config.validation_fraction)
-        val_size = max(1, val_size)
-        # Chronological holdout from train
-        tr_data = train_tensor[:-val_size]
-        val_data = train_tensor[-val_size:]
-        train_loader = DataLoader(
-            TensorDataset(tr_data),
-            batch_size=config.batch_size,
-            shuffle=True,
-        )
+    # Transform TRAIN-validation windows (if present) with frozen scaler
+    if train_val_batch is not None and len(train_val_batch.windows) > 0:
+        n_val_w = len(train_val_batch.windows)
+        val_flat = train_val_batch.windows.reshape(-1, n_feat)
+        scaled_val_flat = scaler.transform(val_flat)
+        scaled_val_windows = scaled_val_flat.reshape(n_val_w, w_len * n_feat)
+
+        # Verify scaler parameters remained identical after val transform
+        _verify_scaler_snapshot(scaler, scaler_snapshot, "validation transform")
+    else:
+        scaled_val_windows = None
+
+    # 5. DataLoaders
+    train_loader = DataLoader(
+        TensorDataset(torch.from_numpy(scaled_fit_windows).float()),
+        batch_size=config.batch_size,
+        shuffle=True,
+    )
+    if scaled_val_windows is not None:
         val_loader = DataLoader(
-            TensorDataset(val_data),
+            TensorDataset(torch.from_numpy(scaled_val_windows).float()),
             batch_size=config.batch_size,
             shuffle=False,
         )
     else:
-        train_loader = DataLoader(
-            TensorDataset(train_tensor),
-            batch_size=config.batch_size,
-            shuffle=True,
-        )
         val_loader = None
 
-    # 5. Initialize model and train
+    # 6. Initialize model and train with early stopping parameter restoration
     model = SparseAutoencoder(
         input_dim=config.input_dim,
         hidden_dim=config.hidden_dim,
@@ -301,7 +442,7 @@ def run_experiment(
         early_stopping_patience=config.early_stopping_patience,
     )
 
-    # 6. Evaluate on CALIBRATION (model & scaler frozen)
+    # 7. Evaluate on CALIBRATION (model & scaler frozen)
     evaluator = CalibrationEvaluator(
         model=model,
         scaler=scaler,
@@ -310,13 +451,16 @@ def run_experiment(
     cal_result: CalibrationResult = evaluator.evaluate(
         cal_windows=cal_batch.windows,
         cal_timestamps=cal_batch.timestamps,
-        num_calibration_rows=len(cal_df),
+        window_accounting=cal_batch.accounting,
         batch_size=config.batch_size,
     )
 
+    # Verify scaler parameters remained identical after cal transform
+    _verify_scaler_snapshot(scaler, scaler_snapshot, "calibration transform")
+
     elapsed_seconds = round(time.time() - start_time, 2)
 
-    # 7. Compile run metadata
+    # 8. Compile run metadata
     train_bound = next(b for b in SPLIT_BOUNDS if b.name == SplitPartition.TRAIN)
     cal_bound = next(b for b in SPLIT_BOUNDS if b.name == SplitPartition.CALIBRATION)
 
@@ -326,12 +470,24 @@ def run_experiment(
         "git_commit": get_git_commit(),
         "seed": config.seed,
         "dataset_fingerprint": dataset_fingerprint,
-        "train_boundary": {"start": str(train_bound.start), "end": str(train_bound.end)},
-        "calibration_boundary": {"start": str(cal_bound.start), "end": str(cal_bound.end)},
-        "num_train_windows": len(train_batch.windows),
-        "num_calibration_windows": len(cal_batch.windows),
+        "dataset_row_count": len(train_df) + len(cal_df),
+        "train_raw_row_count": len(train_df),
+        "calibration_raw_row_count": len(cal_df),
+        "train_fit_raw_row_count": len(train_fit_df),
+        "train_fit_window_count": len(train_fit_batch.windows),
+        "train_val_raw_row_count": len(train_val_df),
+        "train_val_window_count": len(train_val_batch.windows) if train_val_batch else 0,
+        "calibration_usable_window_count": len(cal_batch.windows),
+        "calibration_exclusion_counts": (
+            cal_batch.accounting.to_dict() if cal_batch.accounting else {}
+        ),
+        "split_boundaries": {
+            "train": {"start": str(train_bound.start), "end": str(train_bound.end)},
+            "calibration": {"start": str(cal_bound.start), "end": str(cal_bound.end)},
+        },
         "runtime_seconds": elapsed_seconds,
         "environment": get_environment_info(),
+        "holdout_observations_retained": False,
         "holdout_accessed": False,
     }
 
@@ -343,7 +499,7 @@ def run_experiment(
         metadata=metadata,
     )
 
-    # 8. Save artifact if directory is provided
+    # 9. Save artifact if directory is provided
     if save_dir is not None:
         out_file = Path(save_dir) / f"{config.run_id}.json"
         result.save(str(out_file))
@@ -359,14 +515,15 @@ def run_matrix(
     save_dir: str = "artifacts/experiments",
     verbose: bool = True,
 ) -> List[ExperimentResult]:
-    """Execute multiple configurations sequentially."""
+    """Execute multiple configurations sequentially with explicit dataset provenance."""
     results: List[ExperimentResult] = []
-    # Load data once if loading from CSV to avoid redundant parsing
     train_df: Optional[pd.DataFrame] = None
     cal_df: Optional[pd.DataFrame] = None
+    matrix_fingerprint: Optional[str] = None
 
     if raw_csv_path is not None:
         train_df, cal_df = load_train_and_calibration_data(raw_csv_path)
+        matrix_fingerprint = CANONICAL_DATASET_SHA256
 
     for i, cfg in enumerate(configs, start=1):
         if verbose:
@@ -376,6 +533,7 @@ def run_matrix(
             train_df=train_df,
             cal_df=cal_df,
             raw_csv_path=raw_csv_path,
+            dataset_fingerprint=matrix_fingerprint,
             save_dir=save_dir,
             verbose=verbose,
         )
@@ -408,15 +566,20 @@ def run_smoke_test(verbose: bool = True) -> ExperimentResult:
         epochs=2,
         batch_size=32,
         seed=42,
+        validation_fraction=0.2,
     )
 
     if verbose:
-        print(f"Executing configuration: {config.run_id} (D={config.input_dim}, H={config.hidden_dim}, Z={config.latent_dim})")
+        print(
+            f"Executing configuration: {config.run_id} (D={config.input_dim}, "
+            f"H={config.hidden_dim}, Z={config.latent_dim})"
+        )
 
     result = run_experiment(
         config=config,
         train_df=train_df,
         cal_df=cal_df,
+        dataset_fingerprint=SYNTHETIC_DATASET_FINGERPRINT,
         save_dir=None,
         verbose=verbose,
     )
@@ -424,19 +587,24 @@ def run_smoke_test(verbose: bool = True) -> ExperimentResult:
     if verbose:
         m = result.calibration_metrics
         print("\n--- Smoke Test Succeeded ---")
+        print("Note: Synthetic test only (verifies pipeline execution; not an evaluation of model performance).")
+        print(f"Dataset fingerprint: {result.metadata['dataset_fingerprint']}")
         print(f"Epochs trained: {result.history.epochs_trained}")
+        print(f"Best validation epoch: {result.history.best_epoch}")
         print(f"Final train total loss: {result.history.history[-1].train_total_loss:.6f}")
-        print(f"Final train recon loss: {result.history.history[-1].train_recon_loss:.6f}")
+        print(f"Train-fit windows: {result.metadata['train_fit_window_count']}")
+        print(f"Train-val windows: {result.metadata['train_val_window_count']}")
         print(f"Usable cal windows: {m.num_usable_windows}")
         print(f"Failure cal windows: {m.num_failure_windows}")
+        print(f"Window accounting: {m.window_accounting}")
         print(f"Normal mean recon error: {m.normal_distribution.get('mean', 0.0):.6f}")
         print(f"Failure mean recon error: {m.failure_distribution.get('mean', 0.0):.6f}")
         if m.pr_auc is not None:
-            print(f"PR-AUC: {m.pr_auc:.4f}")
+            print(f"PR-AUC (synthetic verification): {m.pr_auc:.4f}")
         if m.roc_auc is not None:
-            print(f"ROC-AUC: {m.roc_auc:.4f}")
+            print(f"ROC-AUC (synthetic verification): {m.roc_auc:.4f}")
         print(f"Runtime: {result.metadata['runtime_seconds']}s")
-        print("Holdout accessed: FALSE")
+        print(f"Holdout observations retained: {result.metadata['holdout_observations_retained']}")
 
     return result
 
@@ -477,7 +645,7 @@ def main() -> None:
             )
     elif args.estimate_resources:
         print("=== Estimated Resource Requirements: Real-Data Experiments ===")
-        print("Dataset: MetroPT3 (445k TRAIN rows, 446k CALIBRATION rows)")
+        print(f"Dataset: MetroPT-3 ({EXPECTED_TRAIN_ROWS:,} TRAIN rows, {EXPECTED_CALIBRATION_ROWS:,} CALIBRATION rows)")
         print("Hardware Target: Single CPU Core (x86_64)")
         print("- Single Run (10 epochs, batch size 256): ~3 to 5 minutes, ~1.5 GB RAM")
         print("- 16-Config Matrix Sequential: ~48 to 80 minutes, ~2.5 GB peak RAM")

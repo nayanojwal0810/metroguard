@@ -5,39 +5,49 @@
 The experiment harness provides a reproducible, leakage-safe pipeline to train configurable Sparse Autoencoder (SAE) models on chronological `TRAIN` data and evaluate them on `CALIBRATION` data without touching `FINAL HOLDOUT`.
 
 ```
-Raw CSV / Preprocessed Partition
+Raw CSV / Streaming Chunks
           │
           ▼
 ┌──────────────────┐
-│ Schema & Split   │  --> Drops HOLDOUT (>= 2020-06-01) completely
-│ Validation       │
+│ Holdout-Safe     │  --> Reads ONLY timestamp + 7 primary features
+│ Ingestion        │  --> Drops pre-TRAIN (< 2020-02-01) and breaks before HOLDOUT (>= 2020-06-01)
 └─────────┬────────┘
           │
-          ├──> TRAIN Partition (2020-02-01 to 2020-03-31)
+          ├──> TRAIN Partition (2020-02-01 00:00:00 to 2020-03-31 23:59:59; 445,298 rows)
           │         │
           │         ▼
-          │    Causal Window Builder (W in {6, 30, 90, 180}, gap rule delta_t > 60s)
+          │    Chronological Split: TRAIN-fit (e.g. 90%) and TRAIN-validation (e.g. 10%)
           │         │
-          │         ▼
-          │    Train Scaler Fit (StandardScaler / MinMaxScaler fit strictly on train)
+          │         ├──> TRAIN-fit Causal Windows
+          │         │         │
+          │         │         ▼
+          │         │    Scaler Fit (StandardScaler / MinMaxScaler fit STRICTLY on TRAIN-fit)
+          │         │         │
+          │         │         ▼
+          │         │    TRAIN-fit Transform (using fitted scaler)
           │         │
-          │         ▼
-          │    Train Scaler Transform
-          │         │
-          │         ▼
-          │    SAE Model Training (PyTorch Adam/SGD, L1/KL loss, seeded)
-          │         │
-          │         ▼
-          └──> CALIBRATION Partition (2020-04-01 to 2020-05-31)
+          │         └──> TRAIN-val Causal Windows
+          │                   │
+          │                   ▼
+          │              TRAIN-val Transform (using frozen TRAIN-fit scaler; no parameter updates)
+          │                   │
+          │                   ▼
+          │              SAE Training & Early Stopping
+          │              (Snapshots best epoch validation parameters; restores best state)
+          │
+          └──> CALIBRATION Partition (2020-04-01 00:00:00 to 2020-05-31 23:59:59; 411,534 rows)
                     │
                     ▼
-               Causal Window Builder
+               CALIBRATION Causal Windows
                     │
                     ▼
-               Calibration Transform (using fitted TRAIN scaler; parameters frozen)
+               Calibration Transform (using frozen TRAIN-fit scaler; parameters strictly invariant)
                     │
                     ▼
-               Calibration Evaluator (threshold-free metrics, event labeling, PR-AUC, ROC-AUC)
+               Calibration Evaluator
+               - Explicit Window Accounting
+               - Threshold-free Metrics (PR-AUC, ROC-AUC, Distributions, Quantiles)
+               - Labeling Convention: Window End Timestamp
                     │
                     ▼
                Run Metadata & Artifact JSON
@@ -45,62 +55,86 @@ Raw CSV / Preprocessed Partition
 
 ---
 
-## 2. Configuration Schema (`ExperimentConfig`)
+## 2. Frozen Partitions and Verified Row Counts
 
-| Parameter | Type | Default | Description |
+The authoritative chronological partition boundaries and verified counts are:
+
+| Partition | Start Timestamp | End Timestamp | Verified Rows |
 |:---|:---|:---|:---|
-| `run_id` | `str` | *required* | Unique identifier for the experiment run |
-| `window_size` | `int` | `30` | Observation window size $W \in \{6, 30, 90, 180\}$ |
-| `stride` | `int` | `1` | Sliding step across valid segments |
-| `scaler_type` | `str` | `"StandardScaler"` | Scaler variant: `"StandardScaler"` or `"MinMaxScaler"` |
-| `sparsity_type` | `str` | `"l1"` | Regularization mechanism: `"l1"` (activity) or `"kl"` (divergence) |
-| `sparsity_weight` | `float` | `1e-4` | Weight $\lambda$ balancing reconstruction loss vs sparsity |
-| `target_sparsity` | `float` | `0.05` | Target firing rate $\rho$ for KL divergence penalty |
-| `hidden_dim` | `Optional[int]` | `None` | Hidden layer dimension $H$ (auto-derived via canonical rule if omitted) |
-| `latent_dim` | `Optional[int]` | `None` | Latent layer dimension $Z$ (auto-derived via canonical rule if omitted) |
-| `seed` | `int` | `42` | Random seed for deterministic weight init and batch shuffling |
-| `optimizer` | `str` | `"adam"` | Optimizer name: `"adam"`, `"adamw"`, or `"sgd"` |
-| `learning_rate` | `float` | `1e-3` | Initial learning rate |
-| `batch_size` | `int` | `256` | Mini-batch size |
-| `epochs` | `int` | `10` | Maximum training epochs |
-| `early_stopping_patience` | `Optional[int]` | `None` | Epochs without improvement before early termination |
-| `validation_fraction` | `float` | `0.1` | Fraction of chronological train data reserved for validation |
-| `device` | `str` | `"cpu"` | Computation device (`"cpu"` or `"cuda"`) |
-| `features` | `Tuple[str, ...]` | Canonical 7 | Analogue sensor features |
+| `TRAIN` | `2020-02-01 00:00:00` | `2020-03-31 23:59:59` | 445,298 |
+| `CALIBRATION` | `2020-04-01 00:00:00` | `2020-05-31 23:59:59` | 411,534 |
+| `FINAL HOLDOUT` | `2020-06-01 00:00:00` | `2020-08-31 23:59:59` | 659,586 |
+| `UNUSED TAIL` | `2020-09-01 00:00:00` | `2020-09-01 03:59:50` | 530 |
+| **Total** | | | **1,516,948** |
 
-### Canonical Dimension Derivation
-For 7 input features:
-- $W = 6 \implies D = 42 \implies H = 32, Z = 16$
-- $W = 30 \implies D = 210 \implies H = 128, Z = 32$
-- $W = 90 \implies D = 630 \implies H = 256, Z = 64$
-- $W = 180 \implies D = 1260 \implies H = 512, Z = 128$
+### Strict Holdout Ingestion Guarantee
+- Chunked streaming reads only the columns required by the experiment (`timestamp` + 7 primary analogue features).
+- Ingestion halts early as soon as the chronological stream passes `CALIBRATION_END` (`2020-05-31 23:59:59`).
+- No `FINAL HOLDOUT` observations are retained in or passed through the experiment pipeline.
 
 ---
 
-## 3. Calibration Evaluation Metrics
+## 3. Train / Validation / Scaler Separation
 
-Evaluation on the calibration partition is strictly threshold-free:
-- **Sample Reconstruction Error**: $s_t = \frac{1}{D} \sum_{d=1}^D (x_d - \hat{x}_d)^2$
-- **Distributions**: Mean, standard deviation, median, min, max, 25th, 75th, 90th, 95th, 99th percentiles for normal periods vs failure periods.
-- **Documented Event Labeling**:
-  - `Event_1`: `2020-04-18 00:00:00` to `2020-04-18 23:59:59`
-  - `Event_2`: `2020-05-29 23:30:00` to `2020-05-30 06:00:00`
-- **Ranking Metrics**: Precision-Recall Area Under Curve (PR-AUC) and ROC-AUC (descriptive, threshold-free).
-- **Accounting**: Usable window count vs rejected windows (insufficient history or service gaps).
-
----
-
-## 4. Controlled Candidate Matrix (16 Configurations)
-
-The full baseline evaluation matrix spans:
-- Window sizes $W \in \{6, 30, 90, 180\}$ (4 values)
-- Scalers $\in \{\text{StandardScaler}, \text{MinMaxScaler}\}$ (2 values)
-- Sparsity $\in \{\text{L1}, \text{KL}\}$ (2 values)
-- Total: $4 \times 2 \times 2 = 16$ candidate configurations.
+When a validation split is enabled (`validation_fraction > 0.0`):
+1. **Chronological Partitioning**: `train_df` is partitioned chronologically into `train_fit_df` and `train_val_df`.
+2. **Strict Fitting**: The scaler is fitted **strictly** on the `train_fit` subset. Observations in `train_val` never enter scaler parameter estimation.
+3. **Frozen Invariance**:
+   - `train_fit` is transformed with the fitted scaler.
+   - `train_val` is transformed with the same frozen scaler.
+   - `cal` is transformed with the same frozen scaler.
+   - Explicit parameter assertions guarantee that scaler parameters (`mean_`, `std_`, `min_`, `max_`) do not mutate during validation or calibration transforms.
 
 ---
 
-## 5. Usage Commands
+## 4. Early Stopping and State Restoration
+
+When validation is enabled in [`SAETrainer`](file:///d:/metroguard/src/experiments/trainer.py):
+- The trainer tracks the lowest validation loss.
+- Whenever validation loss improves, a detached snapshot of model parameters is saved.
+- At the conclusion of training, the model is restored to the parameter state of `best_epoch`.
+- If no validation loader is provided, the model state is left as-is without manufacturing an artificial best epoch.
+
+---
+
+## 5. Explicit Window Accounting
+
+Window accounting preserves the distinction between raw observations and sliding window endpoints:
+- **`num_observations`**: Total raw rows in the partition.
+- **`num_candidate_endpoints`**: Total candidate evaluation timestamps considered with stride $S$.
+- **`num_usable_windows`**: Endpoints with a complete, gap-free history of $W$ observations.
+- **`num_excluded_insufficient_history`**: Endpoints at the beginning of the series ($i < W - 1$) with fewer than $W$ prior observations.
+- **`num_excluded_service_gap`**: Endpoints where a telemetry gap ($\Delta t > 60\text{s}$) prevents forming a continuous causal window.
+- **`num_excluded_split_boundary`**: Endpoints where a candidate window crosses partition bounds.
+- **`num_excluded_out_of_bounds`**: Endpoints falling outside defined split bounds.
+
+**Conservation Rule**:
+$$\text{num\_candidate\_endpoints} = \text{num\_usable\_windows} + \sum \text{num\_excluded\_*}$$
+
+---
+
+## 6. Calibration Labeling Convention
+
+A window is labelled strictly according to its **evaluation/end timestamp** $t$:
+- If $t \in [\text{event.start}, \text{event.end}]$: label = 1 (failure), `event_id` = documented event ID.
+- If $t < \text{event.start}$ (immediately before event): label = 0 (normal).
+- If $t > \text{event.end}$ (immediately after event): label = 0 (normal).
+The window's historical context $[t - W + 1, t - 1]$ does not alter event membership.
+
+Documented Calibration Events:
+- `Event_1`: `2020-04-18 00:00:00` to `2020-04-18 23:59:59`
+- `Event_2`: `2020-05-29 23:30:00` to `2020-05-30 06:00:00`
+
+---
+
+## 7. Dataset Provenance
+
+- **Real MetroPT-3 Runs**: `dataset_fingerprint = "db30ccb4ea402e3c8bf2c99db06e288d4f2a772f6928f9dbe26a920d69793e24"`
+- **Synthetic / Smoke Runs**: `dataset_fingerprint = "synthetic_experiment_dataset"`
+
+---
+
+## 8. Usage Commands
 
 ```bash
 # Run lightweight synthetic smoke test (< 5 seconds on CPU)

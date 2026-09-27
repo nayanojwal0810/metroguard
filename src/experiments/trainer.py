@@ -55,12 +55,21 @@ class TrainingHistory:
 
 
 def set_seed(seed: int) -> None:
-    """Set global random seeds for deterministic execution across libraries."""
+    """Configure pseudo-random seeds for repeatable execution across libraries.
+
+    Repeatability & Determinism Scope:
+    - Guarantees pseudo-random repeatable execution for CPU computations with identical software builds.
+    - If CUDA is available, sets cudnn.deterministic=True and cudnn.benchmark=False.
+    - Exact bitwise determinism across different hardware platforms, CUDA driver versions,
+      or non-deterministic GPU kernel atomic operations is not guaranteed by seeding alone.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 class SAETrainer:
@@ -167,7 +176,8 @@ class SAETrainer:
         """
         history = TrainingHistory(epochs_trained=0)
         best_val_loss = float("inf")
-        best_epoch = None
+        best_epoch: Optional[int] = None
+        best_state_dict: Optional[Dict[str, torch.Tensor]] = None
         patience_counter = 0
 
         for epoch in range(1, epochs + 1):
@@ -182,6 +192,11 @@ class SAETrainer:
                     best_val_loss = val_loss
                     best_epoch = epoch
                     patience_counter = 0
+                    # Snapshot best model weights on CPU
+                    best_state_dict = {
+                        k: v.clone().detach().cpu()
+                        for k, v in self.model.state_dict().items()
+                    }
                 else:
                     patience_counter += 1
 
@@ -200,6 +215,10 @@ class SAETrainer:
             if early_stopping_patience is not None and patience_counter >= early_stopping_patience:
                 history.early_stopped = True
                 break
+
+        # Restore best model state when validation was active
+        if best_state_dict is not None:
+            self.model.load_state_dict(best_state_dict)
 
         history.best_epoch = best_epoch
         history.best_loss = best_val_loss if val_loader is not None else None

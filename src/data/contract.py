@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final, Tuple
+from typing import Dict, Final, Tuple
 import pandas as pd
 
 # Canonical feature subsets
@@ -42,6 +42,13 @@ DATASET_EXPECTED_ROWS: Final[int] = 1_516_948
 DATASET_SHA256: Final[str] = (
     "db30ccb4ea402e3c8bf2c99db06e288d4f2a772f6928f9dbe26a920d69793e24"
 )
+CANONICAL_DATASET_SHA256: Final[str] = DATASET_SHA256
+SYNTHETIC_DATASET_FINGERPRINT: Final[str] = "synthetic_experiment_dataset"
+
+EXPECTED_TRAIN_ROWS: Final[int] = 445_298
+EXPECTED_CALIBRATION_ROWS: Final[int] = 411_534
+EXPECTED_HOLDOUT_ROWS: Final[int] = 659_586
+EXPECTED_UNUSED_TAIL_ROWS: Final[int] = 530
 
 
 class SplitPartition(str, Enum):
