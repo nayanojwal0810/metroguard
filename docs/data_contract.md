@@ -11,7 +11,7 @@ This data contract establishes the authoritative technical specifications, bound
 | **Canonical File Path** | `data/raw/MetroPT3(AirCompressor).csv` |
 | **Row Count** | `1,516,948` rows |
 | **Column Count** | `17` columns (1 index, 1 timestamp, 15 sensor features) |
-| **SHA-256 Checksum** | `6fe0a3de07df3cf0a4305ecbf6f6b0f7e1b5fd01460394c8b671e2e92c4b572e` |
+| **SHA-256 Checksum** | `db30ccb4ea402e3c8bf2c99db06e288d4f2a772f6928f9dbe26a920d69793e24` |
 | **Chronological Start** | `2020-02-01 00:00:00` |
 | **Chronological End** | `2020-09-01 03:59:50` |
 | **Sampling Cadence** | Empirical ~10-second nominal cadence ($99.976\%$ within 9–13s range; $0.022\%$ service breaks $>60\text{s}$) |
@@ -34,7 +34,7 @@ The approved primary baseline input (**METROGUARD ENGINEERING DECISION**, `DEC-0
 
 ### Excluded / Retained Columns
 
-- **Serialized Index:** `column00` is an auto-generated integer index from CSV export and must be omitted from all feature matrices.
+- **Serialized Index:** The first column (`Unnamed: 0` in pandas / `column00`) is an auto-generated integer index from CSV export and must be omitted from all feature matrices.
 - **Timestamp Column:** `timestamp` is used strictly for causal ordering, gap detection, and split assignment. It is never fed as a numeric feature into the model.
 - **Digital Status Signals (8):** `COMP`, `DV_eletric`, `Towers`, `MPG`, `LPS`, `Pressure_switch`, `Oil_level`, `Caudal_impulses` are retained in the raw dataset for system context and future controlled feature ablations, but are strictly excluded from primary baseline input.
 
@@ -70,7 +70,7 @@ $$\forall t, \quad \text{Decision}(t) = f\big(\{x_\tau \mid \tau \le t\}\big)$$
 
 1. **Future-Row Scaling:** Normalization parameters (mean, standard deviation, min, max) must be computed exclusively on the `TRAIN` partition. Scalers must never be fitted on `CALIBRATION` or `HOLDOUT`, nor across the full dataset.
 2. **Future Interpolation:** Missing data or gaps must never be filled using forward interpolation, spline fitting, or bidirectional smoothing.
-3. **Centered Rolling Windows:** Rolling statistics or windowing must strictly look backward into the past: $[t - (W-1)\Delta t, \, t]$. Centered windows $[t - k, \, t + k]$ are strictly prohibited.
+3. **Centered Rolling Windows:** Rolling statistics or windowing must strictly look backward into the past: $[t_{i - W + 1}, \, t_i]$. Centered windows $[t - k, \, t + k]$ are strictly prohibited.
 4. **Future-Derived Imputation:** Any missing value strategy using global statistics calculated over future rows is prohibited.
 5. **Post-Event Feature Construction:** Features derived from knowing when an alert or maintenance event terminated are strictly prohibited.
 6. **Holdout-Driven Tuning:** No hyperparameter, threshold, architecture parameter, or window candidate may be selected based on holdout performance.
@@ -84,3 +84,18 @@ The local MetroPT-3 telemetry exhibits 331 physical service gaps where consecuti
 - **Gap Reset Rule:** If $\Delta t_i = t_i - t_{i-1} > 60\text{ seconds}$, a service break is declared.
 - **Engineering Status:** The 60-second boundary is an empirical MetroGuard engineering decision, reflecting operational compressor cycling and telemetry intermissions, not a literature claim.
 - **Insufficient History Handling:** Following a service break or partition boundary, until $W$ consecutive continuous observations accumulate without a gap, no model-ready window is produced. The pipeline must explicitly mark the state as `INSUFFICIENT_HISTORY` or `WARMUP` rather than fabricating padded inputs or bridging across the break.
+
+## 7. Authoritative Windowing Contract
+
+The authoritative definition of a temporal window in MetroGuard is:
+
+- A window contains exactly $W$ consecutive observations.
+- The window ends at the evaluation observation $t$.
+- All observations are at or before $t$.
+- Every consecutive timestamp gap within the window must be $\le 60\text{ seconds}$.
+- A window may not cross a train/calibration/holdout boundary.
+- A window may not cross a service gap.
+- No padding, interpolation, or synthetic observations are introduced.
+- **Therefore, $W$ represents observation count, not an exact elapsed-time duration.**
+
+Because nominal sampling cadence is ~10 seconds with operational jitter (8–13s), the physical elapsed time across $W$ observations varies naturally; $W$ must never be equated with a fixed physical duration.

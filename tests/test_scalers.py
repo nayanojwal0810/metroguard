@@ -99,3 +99,54 @@ def test_scaler_raises_if_transform_before_fit():
     minmax = MinMaxScaler(features=PRIMARY_FEATURES)
     with pytest.raises(RuntimeError, match="must be fitted"):
         minmax.transform(df)
+
+
+def test_scaler_enforces_train_only_fitting_by_timestamp():
+    """Verify that attempting to fit on calibration or holdout timestamps raises ValueError."""
+    # Data with calibration timestamps (April 2020)
+    df_cal = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2020-04-10", periods=5, freq="10s"),
+            "TP2": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "TP3": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "H1": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "DV_pressure": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "Reservoirs": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "Oil_temperature": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "Motor_current": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+
+    scaler_std = StandardScaler(features=PRIMARY_FEATURES)
+    with pytest.raises(ValueError, match="Leakage violation.*TRAIN"):
+        scaler_std.fit(df_cal)
+
+    scaler_mm = MinMaxScaler(features=PRIMARY_FEATURES)
+    with pytest.raises(ValueError, match="Leakage violation.*TRAIN"):
+        scaler_mm.fit(df_cal)
+
+    # Valid train timestamps (February 2020) must succeed
+    df_train = df_cal.copy()
+    df_train["timestamp"] = pd.date_range("2020-02-10", periods=5, freq="10s")
+    scaler_std.fit(df_train)
+    assert scaler_std.is_fitted
+
+
+def test_scaler_enforces_train_only_fitting_by_partition_column():
+    """Verify that attempting to fit on non-TRAIN partition column raises ValueError."""
+    df_with_partition = pd.DataFrame(
+        {
+            "partition": ["CALIBRATION", "CALIBRATION"],
+            "TP2": [1.0, 2.0],
+            "TP3": [1.0, 2.0],
+            "H1": [1.0, 2.0],
+            "DV_pressure": [1.0, 2.0],
+            "Reservoirs": [1.0, 2.0],
+            "Oil_temperature": [1.0, 2.0],
+            "Motor_current": [1.0, 2.0],
+        }
+    )
+
+    scaler = StandardScaler(features=PRIMARY_FEATURES)
+    with pytest.raises(ValueError, match="Leakage violation.*TRAIN partition"):
+        scaler.fit(df_with_partition)

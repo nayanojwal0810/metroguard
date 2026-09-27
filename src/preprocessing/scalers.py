@@ -5,7 +5,12 @@ from typing import Dict, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from src.data.contract import PRIMARY_FEATURES
+from src.data.contract import (
+    PRIMARY_FEATURES,
+    SPLIT_BOUNDS,
+    TIMESTAMP_COL,
+    SplitPartition,
+)
 
 
 class BaseScaler(ABC):
@@ -14,6 +19,32 @@ class BaseScaler(ABC):
     def __init__(self, features: Sequence[str] = PRIMARY_FEATURES) -> None:
         self.features = tuple(features)
         self.is_fitted: bool = False
+
+    def _validate_train_data(self, data: Union[pd.DataFrame, np.ndarray]) -> None:
+        """Enforce that scaling parameters can only be fitted on training partition data."""
+        if isinstance(data, pd.DataFrame):
+            # 1. Enforce split partition column if present
+            if "partition" in data.columns:
+                non_train = data["partition"] != SplitPartition.TRAIN.value
+                if non_train.any():
+                    invalid_partitions = sorted(data.loc[non_train, "partition"].unique().tolist())
+                    raise ValueError(
+                        f"Leakage violation: Scaler fit() can only ingest data from the TRAIN partition. "
+                        f"Found non-TRAIN partitions: {invalid_partitions}"
+                    )
+
+            # 2. Enforce timestamp boundaries if timestamp column is present
+            if TIMESTAMP_COL in data.columns:
+                ts = pd.to_datetime(data[TIMESTAMP_COL])
+                train_boundary = next(b for b in SPLIT_BOUNDS if b.name == SplitPartition.TRAIN)
+                out_of_train = (ts < train_boundary.start) | (ts > train_boundary.end)
+                if out_of_train.any():
+                    first_invalid = ts[out_of_train].iloc[0]
+                    raise ValueError(
+                        f"Leakage violation: Scaler fit() can only ingest observations within the TRAIN "
+                        f"window ({train_boundary.start} to {train_boundary.end}). "
+                        f"Found out-of-boundary timestamp: {first_invalid}"
+                    )
 
     @abstractmethod
     def fit(self, data: Union[pd.DataFrame, np.ndarray]) -> "BaseScaler":
@@ -53,6 +84,7 @@ class StandardScaler(BaseScaler):
 
     def fit(self, data: Union[pd.DataFrame, np.ndarray]) -> "StandardScaler":
         """Compute mean and standard deviation strictly on training data."""
+        self._validate_train_data(data)
         if isinstance(data, pd.DataFrame):
             x = data[list(self.features)].to_numpy(dtype=np.float64)
         else:
@@ -108,6 +140,7 @@ class MinMaxScaler(BaseScaler):
 
     def fit(self, data: Union[pd.DataFrame, np.ndarray]) -> "MinMaxScaler":
         """Compute min and max bounds strictly on training data."""
+        self._validate_train_data(data)
         if isinstance(data, pd.DataFrame):
             x = data[list(self.features)].to_numpy(dtype=np.float64)
         else:

@@ -30,12 +30,15 @@ class WindowBatch:
 class CausalWindowBuilder:
     """Builds causal rolling windows of continuous sensor observations.
 
-    Guarantees:
-    1. Strictly causal: Window at index i uses only observations from [i - W + 1, i].
-    2. Fixed observation count: Every window contains exactly W observations.
-    3. Gap isolation: Windows never cross telemetry breaks where Δt > max_gap_seconds.
-    4. Split isolation: Windows never cross chronological split boundaries.
-    5. Zero fabrication: Insufficient history produces no window (no padding/backfilling).
+    Authoritative Window Contract:
+    - A window contains exactly W consecutive observations.
+    - The window ends at the evaluation observation t.
+    - All observations are at or before t.
+    - Every consecutive timestamp gap within the window must be <= max_gap_seconds (default 60s).
+    - A window may not cross a train/calibration/holdout boundary.
+    - A window may not cross a service gap.
+    - No padding, interpolation, or synthetic observations are introduced.
+    - Therefore W represents observation count, not an exact elapsed-time duration.
     """
 
     def __init__(

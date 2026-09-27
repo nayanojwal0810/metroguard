@@ -162,3 +162,26 @@ def test_future_row_cannot_enter_past_window():
     assert not np.array_equal(window_0_orig, window_0_past_mod), (
         "Window failed to reflect in-window historical change"
     )
+
+
+def test_window_represents_observation_count_not_fixed_duration():
+    """Verify that W represents observation count, accommodating natural cadence jitter <= 60s."""
+    # 6 consecutive observations with non-uniform intervals (8s, 12s, 10s, 15s, 9s)
+    # Total elapsed physical time = 8 + 12 + 10 + 15 + 9 = 54s (not 60s or 50s)
+    timestamps = [
+        pd.Timestamp("2020-02-01 10:00:00"),
+        pd.Timestamp("2020-02-01 10:00:08"),  # +8s
+        pd.Timestamp("2020-02-01 10:00:20"),  # +12s
+        pd.Timestamp("2020-02-01 10:00:30"),  # +10s
+        pd.Timestamp("2020-02-01 10:00:45"),  # +15s
+        pd.Timestamp("2020-02-01 10:00:54"),  # +9s
+    ]
+    df = _create_mock_df(pd.Series(timestamps))
+
+    builder = CausalWindowBuilder(window_size=6, stride=1, max_gap_seconds=60.0)
+    batch = builder.build_windows(df)
+
+    # Must produce exactly 1 window with exactly 6 observations
+    assert len(batch.windows) == 1
+    assert batch.windows.shape == (1, 6, len(PRIMARY_FEATURES))
+    assert batch.timestamps[0] == pd.Timestamp("2020-02-01 10:00:54")

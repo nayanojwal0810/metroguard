@@ -40,7 +40,7 @@ WINDOW_CANDIDATES: Final[Tuple[int, ...]] = (6, 30, 90, 180)
 DATASET_CANONICAL_NAME: Final[str] = "MetroPT3(AirCompressor).csv"
 DATASET_EXPECTED_ROWS: Final[int] = 1_516_948
 DATASET_SHA256: Final[str] = (
-    "6fe0a3de07df3cf0a4305ecbf6f6b0f7e1b5fd01460394c8b671e2e92c4b572e"
+    "db30ccb4ea402e3c8bf2c99db06e288d4f2a772f6928f9dbe26a920d69793e24"
 )
 
 

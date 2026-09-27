@@ -21,19 +21,27 @@ The approved primary baseline input consists of the seven continuous analogue se
 
 ## Temporal Representation
 
-The final window size is not frozen yet. A candidate calibration set is defined at the nominal ~10-second empirical cadence:
+The final window size is not frozen yet. A candidate calibration set is defined based on observation counts:
 
-- **6 observations** $\approx$ 1 minute
-- **30 observations** $\approx$ 5 minutes
-- **90 observations** $\approx$ 15 minutes
-- **180 observations** $\approx$ 30 minutes
+- **6 observations** (nominal scale: ~1 minute at ~10s cadence)
+- **30 observations** (nominal scale: ~5 minutes at ~10s cadence)
+- **90 observations** (nominal scale: ~15 minutes at ~10s cadence)
+- **180 observations** (nominal scale: ~30 minutes at ~10s cadence)
 
-These window sizes represent candidate engineering configurations, not claims from literature. The final window size will be selected based strictly on permitted training and calibration evidence; the final holdout must not influence window selection.
+**Authoritative Window Definition:**
+- A window contains exactly $W$ consecutive observations.
+- The window ends at the evaluation observation $t_i$.
+- All observations are at or before $t_i$ ($t_{i - W + 1} \le \dots \le t_i$).
+- Every consecutive timestamp gap within the window must be $\le 60\text{ seconds}$.
+- A window may not cross a train/calibration/holdout boundary.
+- A window may not cross a service gap.
+- No padding, interpolation, or synthetic observations are introduced.
+- **Therefore, $W$ represents observation count, not an exact elapsed-time duration.** Physical duration varies naturally with sampling cadence jitter (8–13s).
 
 ### Window Construction Rules
 
 To ensure leakage-safe operational behavior:
-1. **Strictly Causal:** For any decision at time $t$, window features use only observations available at or before $t$: $[t - (W-1)\Delta t, \, t]$. Centered rolling windows and future backfilling are strictly forbidden.
+1. **Strictly Causal:** For any decision at time $t_i$, window features use only observations available at or before $t_i$: $[t_{i - W + 1}, \, t_i]$. Centered rolling windows and future backfilling are strictly forbidden.
 2. **Fixed Observation Count:** Each window contains exactly $W$ continuous consecutive observations.
 3. **Configurable Stride:** Stride $S$ is configurable (default $S=1$ for continuous inference, $S \ge 1$ for downsampled evaluation).
 4. **Gap Boundary Rule:** Windows cannot cross operational service or telemetry breaks. A gap-reset condition is established at $\Delta t > 60\text{ seconds}$.
