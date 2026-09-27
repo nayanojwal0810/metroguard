@@ -46,6 +46,7 @@ Thumbs.db
 .ipynb_checkpoints/
 colab_runs/
 runs/
+artifacts/runs/
 
 # Archives and bundles
 *.zip

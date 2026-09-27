@@ -85,3 +85,46 @@ SPLIT_BOUNDS: Final[Tuple[PartitionBoundary, ...]] = (
         end=pd.Timestamp("2020-09-01 03:59:50"),
     ),
 )
+
+
+@dataclass(frozen=True)
+class FailureEvent:
+    """Documented maintenance failure event interval."""
+
+    event_id: str
+    partition: SplitPartition
+    start: pd.Timestamp
+    end: pd.Timestamp
+    description: str
+
+
+FAILURE_EVENTS: Final[Tuple[FailureEvent, ...]] = (
+    FailureEvent(
+        event_id="Event_1",
+        partition=SplitPartition.CALIBRATION,
+        start=pd.Timestamp("2020-04-18 00:00:00"),
+        end=pd.Timestamp("2020-04-18 23:59:59"),
+        description="Air leak on clients (pipe blowout; severe pressure drop)",
+    ),
+    FailureEvent(
+        event_id="Event_2",
+        partition=SplitPartition.CALIBRATION,
+        start=pd.Timestamp("2020-05-29 23:30:00"),
+        end=pd.Timestamp("2020-05-30 06:00:00"),
+        description="Air leak on air dryer (pilot valve malfunction; LPS triggers)",
+    ),
+    FailureEvent(
+        event_id="Event_3",
+        partition=SplitPartition.HOLDOUT,
+        start=pd.Timestamp("2020-06-05 10:00:00"),
+        end=pd.Timestamp("2020-06-07 14:30:00"),
+        description="Air leak (sustained pressure drops; maintenance 8-Jun)",
+    ),
+    FailureEvent(
+        event_id="Event_4",
+        partition=SplitPartition.HOLDOUT,
+        start=pd.Timestamp("2020-07-15 14:30:00"),
+        end=pd.Timestamp("2020-07-15 19:00:00"),
+        description="Air leak (maintenance 16-Jul 00:00)",
+    ),
+)
