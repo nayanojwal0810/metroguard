@@ -169,3 +169,34 @@ def test_gate_holdout_access_mismatch(monkeypatch, tmp_path):
     res.metadata["holdout_accessed"] = True
     with pytest.raises(AssertionError):
         verify_replay_consistency(res, 42)
+
+from src.experiments.alert_calibration import _normalize_seq
+
+def test_normalize_seq_identical_list_vs_tuple():
+    assert _normalize_seq(["a", "b"]) == _normalize_seq(("a", "b"))
+
+def test_normalize_seq_reordered_fails():
+    assert _normalize_seq(["a", "b"]) != _normalize_seq(("b", "a"))
+
+def test_normalize_seq_missing_element_fails():
+    assert _normalize_seq(["a", "b"]) != _normalize_seq(("a",))
+
+def test_normalize_seq_extra_element_fails():
+    assert _normalize_seq(["a", "b"]) != _normalize_seq(("a", "b", "c"))
+
+def test_normalize_seq_changed_scalar_fails():
+    assert _normalize_seq(["a", 1]) != _normalize_seq(("a", 2))
+
+def test_normalize_seq_nested_sequence():
+    assert _normalize_seq([("a", ["b", "c"]), "d"]) == _normalize_seq([["a", ("b", "c")], "d"])
+
+def test_gate_missing_required_config_field(monkeypatch, tmp_path):
+    res = setup_mock_gate(monkeypatch, tmp_path)
+    class MockConfigBad:
+        def to_dict(self):
+            cfg = dict(setup_mock_gate(monkeypatch, tmp_path).config.to_dict())
+            del cfg["features"]
+            return cfg
+    res.config = MockConfigBad()
+    with pytest.raises(KeyError):
+        verify_replay_consistency(res, 42)

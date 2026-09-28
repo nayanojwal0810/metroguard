@@ -104,6 +104,16 @@ def compute_alert_episodes(
         "event_2_detected": e2_det,
         "event_2_lead_time_sec": e2_lt
     }
+def _normalize_seq(val: Any) -> Any:
+    """
+    Recursively normalize tuples to lists to handle JSON serialization representation differences.
+    Preserves exact ordering and all other scalar types.
+    """
+    if isinstance(val, (list, tuple)):
+        return [_normalize_seq(x) for x in val]
+    if isinstance(val, dict):
+        return {k: _normalize_seq(v) for k, v in val.items()}
+    return val
 
 def verify_replay_consistency(res: Any, seed: int) -> None:
     # res is an ExperimentResult
@@ -161,7 +171,9 @@ def verify_replay_consistency(res: Any, seed: int) -> None:
     for field in ["window_size", "stride", "scaler_type", "sparsity_type", "sparsity_weight",
                   "hidden_dim", "latent_dim", "seed", "optimizer", "learning_rate",
                   "batch_size", "epochs", "validation_fraction", "features"]:
-        assert curr_cfg[field] == ref_cfg[field], f"Config mismatch in {field}: {curr_cfg[field]} vs {ref_cfg[field]}"
+        curr_val = _normalize_seq(curr_cfg[field])
+        ref_val = _normalize_seq(ref_cfg[field])
+        assert curr_val == ref_val, f"Config mismatch in {field}:\n{curr_val}\nvs\n{ref_val}"
 
     # 4. Temporal contract
     assert curr_meta["split_boundaries"] == ref_meta["split_boundaries"]
