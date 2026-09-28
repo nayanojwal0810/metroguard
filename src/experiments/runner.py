@@ -905,6 +905,12 @@ def main() -> None:
         help="Execution device ('cpu' or 'cuda', default: cpu).",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override the default random seed for the experiment.",
+    )
+    parser.add_argument(
         "--run-matrix",
         action="store_true",
         help="Execute the full 16-run real-data detector matrix.",
@@ -957,6 +963,12 @@ def main() -> None:
         if args.run_id in configs:
             cfg = configs[args.run_id]
             cfg.device = args.device
+            if args.seed is not None:
+                cfg.seed = args.seed
+                if "_s42" in cfg.run_id:
+                    cfg.run_id = cfg.run_id.replace("_s42", f"_s{args.seed}")
+                else:
+                    cfg.run_id = f"{cfg.run_id}_s{args.seed}"
             run_experiment(
                 config=cfg,
                 raw_csv_path=args.data_path,

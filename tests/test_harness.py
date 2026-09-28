@@ -599,14 +599,14 @@ def test_matrix_enumeration_exact_unique() -> None:
     """Verify that matrix generator produces exactly 16 unique configs as required."""
     configs = generate_matrix_configs()
     assert len(configs) == 16
-    
+
     # Uniqueness dimensions
     unique_ids = set(c.run_id for c in configs)
     assert len(unique_ids) == 16
-    
+
     unique_tuples = set((c.window_size, c.scaler_type, c.sparsity_type) for c in configs)
     assert len(unique_tuples) == 16
-    
+
     # Assert naming convention
     for c in configs:
         assert c.run_id.startswith(f"w{c.window_size:02d}_")
@@ -617,13 +617,13 @@ def test_matrix_enumeration_exact_unique() -> None:
 def test_matrix_artifact_resume_behavior(tmp_path) -> None:
     """Verify resume skips valid artifacts and catches malformed ones."""
     from src.experiments.runner import check_artifact_complete
-    
+
     valid_file = tmp_path / "valid.json"
     valid_data = {
-        "run_id": "test", "config_hash": "hash123", "dataset_fingerprint": "fp", 
+        "run_id": "test", "config_hash": "hash123", "dataset_fingerprint": "fp",
         "git_commit": "abc", "config": {}, "environment": {}, "split_boundaries": {},
         "train_fit_window_count": 10, "calibration_usable_window_count": 10,
-        "training_history": {}, 
+        "training_history": {},
         "calibration_metrics": {
             "average_precision": 0.5,
             "event_distributions": {"Event_1": {}}
@@ -632,32 +632,32 @@ def test_matrix_artifact_resume_behavior(tmp_path) -> None:
     }
     import json
     with open(valid_file, "w") as f: json.dump(valid_data, f)
-    
+
     assert check_artifact_complete(str(valid_file), "hash123") == True
-    
+
     # Hash mismatch
     assert check_artifact_complete(str(valid_file), "hash999") == False
-    
+
     # Missing AP
     valid_data["calibration_metrics"].pop("average_precision")
     malformed_file = tmp_path / "malformed.json"
     with open(malformed_file, "w") as f: json.dump(valid_data, f)
-    
+
     assert check_artifact_complete(str(malformed_file), "hash123") == False
 
 def test_dataset_row_count_metadata_canonical(tmp_path) -> None:
     from src.experiments.runner import run_experiment, create_synthetic_experiment_data
     from src.experiments.config import ExperimentConfig
-    
+
     cfg = ExperimentConfig(
         run_id="test_meta",
         window_size=6,
         epochs=1,
         batch_size=16
     )
-    
+
     train_df, cal_df = create_synthetic_experiment_data()
-    
+
     # Run with canonical fingerprint
     from src.experiments.runner import CANONICAL_DATASET_SHA256
     res = run_experiment(
@@ -676,19 +676,45 @@ def test_chunked_transform_equivalence() -> None:
     from src.preprocessing.scalers import StandardScaler
     from src.experiments.runner import chunked_transform
     import numpy as np
-    
+
     scaler = StandardScaler(features=["f1", "f2"])
-    
+
     # 3D windows (N, W, D)
     windows = np.random.rand(100, 10, 2).astype(np.float32)
     # fit
     scaler.fit(windows.reshape(-1, 2))
-    
+
     # Traditional
     flat_scaled = scaler.transform(windows.reshape(-1, 2))
     trad_out = flat_scaled.reshape(100, 20).astype(np.float32)
-    
+
     # Chunked
     chunk_out = chunked_transform(scaler, windows, chunk_size=32)
-    
+
     np.testing.assert_allclose(trad_out, chunk_out, rtol=1e-5, atol=1e-5)
+
+def test_runner_cli_seed_override(monkeypatch) -> None:
+    from src.experiments.runner import main, generate_matrix_configs
+    import sys
+
+    # Mock run_experiment so it doesn't actually run
+    class MockConfig:
+        run_id = ""
+        seed = 0
+
+    captured_config = MockConfig()
+
+    def mock_run_experiment(config, *args, **kwargs):
+        captured_config.run_id = config.run_id
+        captured_config.seed = config.seed
+        return None
+
+    monkeypatch.setattr("src.experiments.runner.run_experiment", mock_run_experiment)
+
+    test_args = ["runner.py", "--run-id", "w180_standard_l1_s42", "--seed", "7", "--output-dir", "tmp"]
+    monkeypatch.setattr(sys, "argv", test_args)
+
+    main()
+
+    assert captured_config.seed == 7
+    assert captured_config.run_id == "w180_standard_l1_s7"
