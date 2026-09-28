@@ -15,7 +15,7 @@ Every candidate run will use exactly the same:
 - Seed = 42
 - End-timestamp labeling convention
 - Artifact schema and invariant model capacity dimension rule (deterministic H/Z per W)
-The only variables allowed to change are W, Scaler, and Sparsity. L1 and KL weights remain at baseline documented values.
+The only variables allowed to change are W, Scaler, and Sparsity. The matrix evaluates predefined L1 and KL regularization configurations using their existing baseline documented lambda values.
 
 ## 3. Primary Metric
 The primary detector-ranking metric is **Average Precision** (`sklearn.metrics.average_precision_score`), which accurately evaluates precision-recall trade-offs under severe class imbalance without relying on arbitrary operational thresholds.
@@ -76,10 +76,11 @@ Exact window and batch counts depend strictly on W, stride, service-gap location
 - Calibration inference batches: ceil(408,431 / 256) = 1,596
 
 **Resource Estimates by W:**
-- **W=6**: RAM < 2GB. CPU Runtime: ~180s per run.
-- **W=30**: RAM < 2GB. CPU Runtime: ~200s per run.
-- **W=90**: RAM < 2.5GB. CPU Runtime: ~230s per run.
-- **W=180**: RAM < 3GB. CPU Runtime: ~280s per run.
+Based on the current implementation, all unscaled TRAIN-fit, TRAIN-val, and CALIBRATION windows are retained in memory simultaneously. During scaling, float64 intermediate arrays and PyTorch float32 copies are additionally created.
+- **W=6**: Peak window storage ~141MB. Total peak RAM < 1GB. CPU Runtime: ~180s per run.
+- **W=30**: Peak window storage ~710MB. Total peak RAM ~2GB. CPU Runtime: ~200s per run.
+- **W=90**: Peak window storage ~2.1GB. Total peak RAM ~5-6GB. CPU Runtime: ~230s per run.
+- **W=180**: Peak window storage ~4.2GB. Scaler intermediate and PyTorch dataloader copies increase this drastically. Total peak RAM ~10-12GB. CPU Runtime: ~280s per run.
 
 ## 12. PRE-RUN ESTIMATES: Total Estimated 16-Run Cost
 The arithmetic for the complete factorial matrix execution cost is:
