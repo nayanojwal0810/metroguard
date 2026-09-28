@@ -24,7 +24,7 @@ def test_persistence_correctness_and_deduplication():
     # The second high score group is at indices 7, 8, which is only length 2 (less than 3). So no alert.
     # Total alerts should be exactly 1.
     assert metrics["total_alerts"] == 1
-    assert metrics["normal_alerts"] == 1
+    assert metrics["false_alert_episodes"] == 1
 
 def test_gap_reset():
     # Gap > 60s
@@ -274,3 +274,64 @@ def test_gap_semantics_remain_visible():
     # Since there's a gap, the streak resets. Thus 0 alerts with persistence=3.
     assert metrics["total_alerts"] == 0
 
+
+def test_event_attribution_classes():
+    from src.experiments.alert_calibration import compute_alert_episodes
+    from src.data.contract import FAILURE_EVENTS
+    # Mock FAILURE_EVENTS if needed? We will just use the real Event_1 dates:
+    # Event 1 starts: 2020-04-18 00:00:00, ends: 2020-04-18 23:59:59
+    base_start = pd.Timestamp("2020-04-18 00:00:00")
+
+    # Pre-event: 1 hour before
+    t1 = base_start - pd.Timedelta(hours=1)
+    # In-event: 1 hour after start
+    t2 = base_start + pd.Timedelta(hours=1)
+    # Post-event: 1 hour after end (end is base_start + 23h 59m 59s)
+    t3 = base_start + pd.Timedelta(hours=25)
+
+    timestamps = pd.DatetimeIndex([t1, t2, t3])
+    scores = np.array([10.0, 10.0, 10.0])
+    labels = np.array([0, 1, 0])
+    event_ids = np.array(["normal", "Event_1", "normal"])
+
+    # Test pre-event
+    metrics = compute_alert_episodes(scores[:1], timestamps[:1], labels[:1], event_ids[:1], threshold=5.0, persistence=1)
+    assert metrics["event_1_detected"] == True
+    assert metrics["event_1_detection_class"] == "pre_event"
+    assert metrics["event_1_lead_time_sec"] == 3600.0
+    assert metrics["event_1_detection_delay_sec"] == 0.0
+    assert metrics["false_alert_episodes"] == 0
+
+    # Test in-event
+    metrics = compute_alert_episodes(scores[1:2], timestamps[1:2], labels[1:2], event_ids[1:2], threshold=5.0, persistence=1)
+    assert metrics["event_1_detected"] == True
+    assert metrics["event_1_detection_class"] == "in_event"
+    assert metrics["event_1_lead_time_sec"] == 0.0
+    assert metrics["event_1_detection_delay_sec"] == 3600.0
+    assert metrics["false_alert_episodes"] == 0
+
+    # Test post-event
+    metrics = compute_alert_episodes(scores[2:3], timestamps[2:3], labels[2:3], event_ids[2:3], threshold=5.0, persistence=1)
+    assert metrics["event_1_detected"] == True
+    assert metrics["event_1_detection_class"] == "post_event"
+    assert metrics["event_1_lead_time_sec"] == 0.0
+    # detection delay is relative to event start
+    assert metrics["event_1_detection_delay_sec"] == 90000.0
+    assert metrics["false_alert_episodes"] == 0
+
+def test_metric_output_schema():
+    from src.experiments.alert_calibration import compute_alert_episodes
+    timestamps = pd.DatetimeIndex([pd.Timestamp("2020-04-18 00:00:00")])
+    scores = np.array([10.0])
+    labels = np.array([1])
+    event_ids = np.array(["Event_1"])
+
+    metrics = compute_alert_episodes(scores, timestamps, labels, event_ids, threshold=5.0, persistence=1)
+    expected_keys = [
+        "window_precision", "window_recall", "window_f1",
+        "total_alerts", "false_alert_episodes", "false_alerts_per_30_days", "alerted_duration_sec",
+        "event_1_detected", "event_1_first_alert_time", "event_1_detection_class", "event_1_lead_time_sec", "event_1_detection_delay_sec",
+        "event_2_detected", "event_2_first_alert_time", "event_2_detection_class", "event_2_lead_time_sec", "event_2_detection_delay_sec"
+    ]
+    for k in expected_keys:
+        assert k in metrics

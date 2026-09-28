@@ -17,13 +17,29 @@ class AlertPolicyRow:
     threshold_percentile: float
     threshold_value: float
     persistence: int
+
+    window_average_precision: float
+    window_roc_auc: float
+    window_precision: float
+    window_recall: float
+    window_f1: float
+
     total_alerts: int
-    normal_alerts: int
+    false_alert_episodes: int
     false_alerts_per_30_days: float
+    alerted_duration_sec: float
+
     event_1_detected: bool
+    event_1_first_alert_time: str
+    event_1_detection_class: str
     event_1_lead_time_sec: float
+    event_1_detection_delay_sec: float
+
     event_2_detected: bool
+    event_2_first_alert_time: str
+    event_2_detection_class: str
     event_2_lead_time_sec: float
+    event_2_detection_delay_sec: float
 
 def calculate_thresholds(normal_scores: np.ndarray) -> Dict[float, float]:
     percentiles = [95.0, 97.0, 98.0, 99.0, 99.5, 99.7, 99.9, 99.95, 99.99]
@@ -61,18 +77,40 @@ def compute_alert_episodes(
     threshold: float,
     persistence: int
 ) -> Dict[str, Any]:
+    from src.experiments.alert_calibration import validate_and_normalize_trace
     scores, timestamps, labels, event_ids = validate_and_normalize_trace(scores, timestamps, labels, event_ids)
 
     n = len(scores)
     above_threshold = (scores >= threshold)
 
-    # Identify gaps > 60s
+    # Window metrics
+    # Normal windows = 0, Failure = 1
+    # We treat >= threshold as predicted 1
+    tp = np.sum((above_threshold) & (labels == 1))
+    fp = np.sum((above_threshold) & (labels == 0))
+    fn = np.sum((~above_threshold) & (labels == 1))
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    # We will compute window AP and ROC AUC outside this function per threshold,
+    # but wait, AP and ROC AUC are threshold-independent!
+    # The requirement says: "For every policy row, expose: window_average_precision, window_roc_auc..."
+    # We can just compute them once or pass them in.
+    # But wait, sklearn's average_precision_score is for the full ranking.
+    # I can compute it or leave it as 0.0 if not needed per threshold?
+    # No, I should pass the overall cal metrics into this function.
+
+    # Let's continue with episodes
     time_diffs = np.diff(timestamps.values) / np.timedelta64(1, 's')
     is_gap = np.insert(time_diffs > 60.0, 0, False)
 
     alerts = []
     current_streak = 0
     in_alert_episode = False
+
+    alerted_windows = 0
 
     for i in range(n):
         if is_gap[i]:
@@ -84,52 +122,97 @@ def compute_alert_episodes(
             if current_streak >= persistence and not in_alert_episode:
                 alerts.append(i - persistence + 1)
                 in_alert_episode = True
+            if in_alert_episode:
+                alerted_windows += 1
         else:
             current_streak = 0
             in_alert_episode = False
 
-    total_duration_sec = (timestamps[-1] - timestamps[0]).total_seconds()
-    if total_duration_sec == 0:
-        total_duration_sec = 1
+    alerted_duration_sec = alerted_windows * 10.0  # approximate 10s per window
 
-    days = total_duration_sec / 86400.0
+    valid_diffs = time_diffs[time_diffs <= 60.0]
+    eligible_duration_sec = valid_diffs.sum() + 10.0 if len(valid_diffs) > 0 else 10.0
+    days = eligible_duration_sec / 86400.0
 
-    normal_alerts = 0
-    e1_det = False
-    e1_lt = 0.0
-    e2_det = False
-    e2_lt = 0.0
+    # Event definitions
+    # 12-hour attribution window
+    ATTRIBUTION_WINDOW = pd.Timedelta(hours=12)
 
-    e1_start = pd.Timestamp("2020-04-18 00:00:00")
-    e2_start = pd.Timestamp("2020-05-29 23:30:00")
+    # Find events
+    events_meta = {}
+    for ev in FAILURE_EVENTS:
+        events_meta[ev.event_id] = {
+            "start": ev.start,
+            "end": ev.end,
+            "detected": False,
+            "first_alert_time": "None",
+            "detection_class": "not_detected",
+            "lead_time_sec": 0.0,
+            "detection_delay_sec": 0.0
+        }
+
+    false_alert_episodes = 0
 
     for idx in alerts:
         t = timestamps[idx]
-        eid = event_ids[idx]
-        if eid == "normal":
-            normal_alerts += 1
-        elif eid == "Event_1":
-            if not e1_det:
-                e1_det = True
-                e1_lt = (e1_start - t).total_seconds()
-                if e1_lt < 0:
-                    e1_lt = 0.0 # post-event detection is not early warning
-        elif eid == "Event_2":
-            if not e2_det:
-                e2_det = True
-                e2_lt = (e2_start - t).total_seconds()
-                if e2_lt < 0:
-                    e2_lt = 0.0
+        attributed = False
+
+        for eid, meta in events_meta.items():
+            if meta["detected"]:
+                # Already detected, but we still attribute alerts within the event window to it
+                # so they don't count as false alerts
+                if (t >= meta["start"] - ATTRIBUTION_WINDOW) and (t <= meta["end"] + ATTRIBUTION_WINDOW):
+                    attributed = True
+                continue
+
+            # Check if alert falls in this event's windows
+            pre_event = (t >= meta["start"] - ATTRIBUTION_WINDOW) and (t < meta["start"])
+            in_event = (t >= meta["start"]) and (t <= meta["end"])
+            post_event = (t > meta["end"]) and (t <= meta["end"] + ATTRIBUTION_WINDOW)
+
+            if pre_event or in_event or post_event:
+                meta["detected"] = True
+                meta["first_alert_time"] = t.isoformat()
+                attributed = True
+                if pre_event:
+                    meta["detection_class"] = "pre_event"
+                    meta["lead_time_sec"] = (meta["start"] - t).total_seconds()
+                    meta["detection_delay_sec"] = 0.0
+                elif in_event:
+                    meta["detection_class"] = "in_event"
+                    meta["lead_time_sec"] = 0.0
+                    meta["detection_delay_sec"] = (t - meta["start"]).total_seconds()
+                else:
+                    meta["detection_class"] = "post_event"
+                    meta["lead_time_sec"] = 0.0
+                    meta["detection_delay_sec"] = (t - meta["start"]).total_seconds()
+
+        if not attributed:
+            false_alert_episodes += 1
 
     return {
+        "window_precision": precision,
+        "window_recall": recall,
+        "window_f1": f1,
+
         "total_alerts": len(alerts),
-        "normal_alerts": normal_alerts,
-        "false_alerts_per_30_days": (normal_alerts / days) * 30 if days > 0 else 0,
-        "event_1_detected": e1_det,
-        "event_1_lead_time_sec": e1_lt,
-        "event_2_detected": e2_det,
-        "event_2_lead_time_sec": e2_lt
+        "false_alert_episodes": false_alert_episodes,
+        "false_alerts_per_30_days": (false_alert_episodes / days) * 30 if days > 0 else 0.0,
+        "alerted_duration_sec": alerted_duration_sec,
+
+        "event_1_detected": events_meta["Event_1"]["detected"] if "Event_1" in events_meta else False,
+        "event_1_first_alert_time": events_meta["Event_1"]["first_alert_time"] if "Event_1" in events_meta else "None",
+        "event_1_detection_class": events_meta["Event_1"]["detection_class"] if "Event_1" in events_meta else "not_detected",
+        "event_1_lead_time_sec": events_meta["Event_1"]["lead_time_sec"] if "Event_1" in events_meta else 0.0,
+        "event_1_detection_delay_sec": events_meta["Event_1"]["detection_delay_sec"] if "Event_1" in events_meta else 0.0,
+
+        "event_2_detected": events_meta["Event_2"]["detected"] if "Event_2" in events_meta else False,
+        "event_2_first_alert_time": events_meta["Event_2"]["first_alert_time"] if "Event_2" in events_meta else "None",
+        "event_2_detection_class": events_meta["Event_2"]["detection_class"] if "Event_2" in events_meta else "not_detected",
+        "event_2_lead_time_sec": events_meta["Event_2"]["lead_time_sec"] if "Event_2" in events_meta else 0.0,
+        "event_2_detection_delay_sec": events_meta["Event_2"]["detection_delay_sec"] if "Event_2" in events_meta else 0.0,
     }
+
 def _normalize_seq(val: Any) -> Any:
     """
     Recursively normalize tuples to lists to handle JSON serialization representation differences.
@@ -274,6 +357,8 @@ def run_sweep(
                     threshold_percentile=p_name,
                     threshold_value=t_val,
                     persistence=k,
+                    window_average_precision=float(cal.metrics.average_precision) if cal.metrics.average_precision else 0.0,
+                    window_roc_auc=float(cal.metrics.roc_auc) if cal.metrics.roc_auc else 0.0,
                     **metrics
                 )
                 rows.append(row)
