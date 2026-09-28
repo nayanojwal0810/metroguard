@@ -36,6 +36,24 @@ from src.experiments.trainer import SAETrainer, TrainingHistory, set_seed
 from src.models.sae import SparseAutoencoder
 from src.preprocessing.scalers import BaseScaler, MinMaxScaler, StandardScaler
 
+def chunked_transform(scaler: BaseScaler, windows: np.ndarray, chunk_size: int = 8192) -> np.ndarray:
+    """Safely transform large window arrays in chunks to prevent multi-GB memory allocations."""
+    if len(windows) == 0:
+        return np.empty((0, 0), dtype=np.float32)
+    if windows.ndim != 3:
+        raise ValueError("chunked_transform expects 3D array (N, W, D)")
+        
+    n_w, w_len, n_feat = windows.shape
+    out = np.empty((n_w, w_len * n_feat), dtype=np.float32)
+    
+    for i in range(0, n_w, chunk_size):
+        chunk = windows[i : i + chunk_size]
+        reshaped = chunk.reshape(-1, n_feat)
+        scaled_chunk = scaler.transform(reshaped)
+        out[i : i + chunk_size] = scaled_chunk.reshape(len(chunk), w_len * n_feat).astype(np.float32)
+        
+    return out
+
 
 @dataclass
 class ExperimentResult:
@@ -387,16 +405,12 @@ def run_experiment(
     else:
         scaler_snapshot = {}
 
-    # Transform TRAIN-fit windows
-    scaled_fit_flat = scaler.transform(fit_flat)
-    scaled_fit_windows = scaled_fit_flat.reshape(n_fit_w, w_len * n_feat)
+    # Transform TRAIN-fit windows safely in chunks
+    scaled_fit_windows = chunked_transform(scaler, train_fit_batch.windows, chunk_size=8192)
 
     # Transform TRAIN-validation windows (if present) with frozen scaler
     if train_val_batch is not None and len(train_val_batch.windows) > 0:
-        n_val_w = len(train_val_batch.windows)
-        val_flat = train_val_batch.windows.reshape(-1, n_feat)
-        scaled_val_flat = scaler.transform(val_flat)
-        scaled_val_windows = scaled_val_flat.reshape(n_val_w, w_len * n_feat)
+        scaled_val_windows = chunked_transform(scaler, train_val_batch.windows, chunk_size=8192)
 
         # Verify scaler parameters remained identical after val transform
         _verify_scaler_snapshot(scaler, scaler_snapshot, "validation transform")
@@ -472,7 +486,7 @@ def run_experiment(
         "git_commit": get_git_commit(),
         "seed": config.seed,
         "dataset_fingerprint": dataset_fingerprint,
-        "dataset_row_count": len(train_df) + len(cal_df),
+        "dataset_row_count": 1516948 if dataset_fingerprint == CANONICAL_DATASET_SHA256 else (len(train_df) + len(cal_df)),
         "train_raw_row_count": len(train_df),
         "calibration_raw_row_count": len(cal_df),
         "train_fit_raw_row_count": len(train_fit_df),

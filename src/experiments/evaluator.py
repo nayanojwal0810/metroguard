@@ -242,24 +242,8 @@ class CalibrationEvaluator:
                 timestamps=cal_timestamps,
             )
 
-        # 1. Transform windows using fitted TRAIN scaler without updating scaler parameters
-        # Capture snapshot of scaler parameters to verify invariance
+        # 1. Capture snapshot of scaler parameters to verify invariance
         scaler_state_before = self._snapshot_scaler()
-
-        if cal_windows.ndim == 3:
-            n_w, w_len, n_feat = cal_windows.shape
-            reshaped = cal_windows.reshape(-1, n_feat)
-            scaled_flat = self.scaler.transform(reshaped)
-            scaled_windows = scaled_flat.reshape(n_w, w_len * n_feat)
-        elif cal_windows.ndim == 2:
-            scaled_windows = self.scaler.transform(cal_windows)
-        else:
-            raise ValueError(
-                f"cal_windows must have 2 or 3 dimensions, got {cal_windows.ndim}"
-            )
-
-        # Verify scaler parameters remained identical
-        self._verify_scaler_unchanged(scaler_state_before)
 
         # 2. Compute reconstruction error without gradient tracking
         self.model.eval()
@@ -267,11 +251,25 @@ class CalibrationEvaluator:
 
         with torch.no_grad():
             for i in range(0, n_usable, batch_size):
-                batch_arr = scaled_windows[i : i + batch_size]
+                batch_windows = cal_windows[i : i + batch_size]
+                
+                # Transform just this chunk
+                if batch_windows.ndim == 3:
+                    n_w, w_len, n_feat = batch_windows.shape
+                    reshaped = batch_windows.reshape(-1, n_feat)
+                    scaled_flat = self.scaler.transform(reshaped)
+                    batch_arr = scaled_flat.reshape(n_w, w_len * n_feat)
+                elif batch_windows.ndim == 2:
+                    batch_arr = self.scaler.transform(batch_windows)
+                else:
+                    raise ValueError(f"cal_windows must have 2 or 3 dimensions, got {batch_windows.ndim}")
+
                 batch_tensor = torch.from_numpy(batch_arr).float().to(self.device)
                 output = self.model(batch_tensor)
-                # sample_losses is 1D tensor of MSE reconstruction error per window
                 scores_list.append(output.sample_losses.cpu().numpy())
+
+        # Verify scaler parameters remained identical
+        self._verify_scaler_unchanged(scaler_state_before)
 
         scores = np.concatenate(scores_list, axis=0).astype(np.float64)
 

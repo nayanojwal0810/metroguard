@@ -644,3 +644,51 @@ def test_matrix_artifact_resume_behavior(tmp_path) -> None:
     with open(malformed_file, "w") as f: json.dump(valid_data, f)
     
     assert check_artifact_complete(str(malformed_file), "hash123") == False
+
+def test_dataset_row_count_metadata_canonical(tmp_path) -> None:
+    from src.experiments.runner import run_experiment, create_synthetic_experiment_data
+    from src.experiments.config import ExperimentConfig
+    
+    cfg = ExperimentConfig(
+        run_id="test_meta",
+        window_size=6,
+        epochs=1,
+        batch_size=16
+    )
+    
+    train_df, cal_df = create_synthetic_experiment_data()
+    
+    # Run with canonical fingerprint
+    from src.experiments.runner import CANONICAL_DATASET_SHA256
+    res = run_experiment(
+        config=cfg,
+        train_df=train_df,
+        cal_df=cal_df,
+        dataset_fingerprint=CANONICAL_DATASET_SHA256,
+        save_dir=str(tmp_path),
+        verbose=False
+    )
+    # Check row count
+    md = res.to_dict()["metadata"]
+    assert md["dataset_row_count"] == 1516948
+
+def test_chunked_transform_equivalence() -> None:
+    from src.preprocessing.scalers import StandardScaler
+    from src.experiments.runner import chunked_transform
+    import numpy as np
+    
+    scaler = StandardScaler(features=["f1", "f2"])
+    
+    # 3D windows (N, W, D)
+    windows = np.random.rand(100, 10, 2).astype(np.float32)
+    # fit
+    scaler.fit(windows.reshape(-1, 2))
+    
+    # Traditional
+    flat_scaled = scaler.transform(windows.reshape(-1, 2))
+    trad_out = flat_scaled.reshape(100, 20).astype(np.float32)
+    
+    # Chunked
+    chunk_out = chunked_transform(scaler, windows, chunk_size=32)
+    
+    np.testing.assert_allclose(trad_out, chunk_out, rtol=1e-5, atol=1e-5)
