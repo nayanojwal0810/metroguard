@@ -29,14 +29,40 @@ def calculate_thresholds(normal_scores: np.ndarray) -> Dict[float, float]:
     percentiles = [95.0, 97.0, 98.0, 99.0, 99.5, 99.7, 99.9, 99.95, 99.99]
     return {p: float(np.percentile(normal_scores, p)) for p in percentiles}
 
+def validate_and_normalize_trace(scores: Any, timestamps: Any, labels: Any, event_ids: Any) -> Tuple[np.ndarray, pd.DatetimeIndex, np.ndarray, np.ndarray]:
+    scores = np.asarray(scores, dtype=float)
+    timestamps = pd.DatetimeIndex(timestamps)
+    labels = np.asarray(labels, dtype=int)
+    event_ids = np.asarray(event_ids, dtype=object)
+
+    if scores.ndim != 1 or timestamps.ndim != 1 or labels.ndim != 1 or event_ids.ndim != 1:
+        raise ValueError("Trace arrays must be 1-dimensional.")
+
+    n = len(scores)
+    if not (n == len(timestamps) == len(labels) == len(event_ids)):
+        raise ValueError("Score trace arrays have mismatched lengths.")
+
+    if n == 0:
+        raise ValueError("Trace arrays cannot be empty.")
+
+    if not timestamps.is_monotonic_increasing:
+        raise ValueError("Timestamps are not chronologically ordered.")
+
+    if np.isnan(scores).any() or np.isinf(scores).any():
+        raise ValueError("Calibration score trace contains NaN or Inf values.")
+
+    return scores, timestamps, labels, event_ids
+
 def compute_alert_episodes(
-    scores: np.ndarray,
-    timestamps: pd.DatetimeIndex,
-    labels: np.ndarray,
-    event_ids: np.ndarray,
+    scores: Any,
+    timestamps: Any,
+    labels: Any,
+    event_ids: Any,
     threshold: float,
     persistence: int
 ) -> Dict[str, Any]:
+    scores, timestamps, labels, event_ids = validate_and_normalize_trace(scores, timestamps, labels, event_ids)
+
     n = len(scores)
     above_threshold = (scores >= threshold)
 
@@ -224,22 +250,15 @@ def run_sweep(
         if verbose:
             print(f"[{cfg.run_id}] Replay-Consistency Gate Passed.")
 
-        scores = cal.scores
-        timestamps = cal.timestamps
-        labels = cal.labels
-        event_ids = cal.event_ids
+        scores, timestamps, labels, event_ids = validate_and_normalize_trace(
+            cal.scores, cal.timestamps, cal.labels, cal.event_ids
+        )
 
         normal_mask = (event_ids == "normal")
         normal_scores = scores[normal_mask]
 
         if normal_scores.size == 0:
             raise ValueError("Calibration score trace contains no normal windows; refusing to construct alert thresholds.")
-
-        if np.isnan(scores).any() or np.isinf(scores).any():
-            raise ValueError("Calibration score trace contains NaN or Inf values.")
-
-        if not (len(scores) == len(timestamps) == len(labels) == len(event_ids)):
-            raise ValueError("Score trace arrays have mismatched lengths.")
 
         if len(normal_scores) + np.sum(labels == 1) != len(scores):
             raise ValueError("Normal and failure counts do not sum to total usable windows.")
