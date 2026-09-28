@@ -64,6 +64,7 @@ class ExperimentResult:
     history: TrainingHistory
     calibration_metrics: CalibrationMetrics
     metadata: Dict[str, Any]
+    cal_result: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert entire experiment result to serializable JSON-friendly dictionary."""
@@ -514,6 +515,7 @@ def run_experiment(
         history=history,
         calibration_metrics=cal_result.metrics,
         metadata=metadata,
+        cal_result=cal_result,
     )
 
     # 9. Save artifact if directory is provided
