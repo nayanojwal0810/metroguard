@@ -118,7 +118,6 @@ class ExperimentConfig:
 
 
 def generate_matrix_configs(
-    base_run_prefix: str = "exp",
     seed: int = 42,
     epochs: int = 10,
     batch_size: int = 256,
@@ -138,8 +137,8 @@ def generate_matrix_configs(
             for sparsity in ("l1", "kl"):
                 # Documented baseline default regularization weights
                 weight = 1e-4 if sparsity == "l1" else 1e-2
-                scaler_short = "std" if scaler == "StandardScaler" else "mm"
-                run_id = f"{base_run_prefix}_w{w}_{scaler_short}_{sparsity}"
+                scaler_short = "standard" if scaler == "StandardScaler" else "minmax"
+                run_id = f"w{w:02d}_{scaler_short}_{sparsity}_s{seed}"
 
                 cfg = ExperimentConfig(
                     run_id=run_id,
