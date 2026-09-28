@@ -80,7 +80,7 @@ def compute_alert_episodes(
     for idx in alerts:
         t = timestamps[idx]
         eid = event_ids[idx]
-        if eid == "None":
+        if eid == "normal":
             normal_alerts += 1
         elif eid == "Event_1":
             if not e1_det:
@@ -229,8 +229,20 @@ def run_sweep(
         labels = cal.labels
         event_ids = cal.event_ids
 
-        normal_mask = (event_ids == "None")
+        normal_mask = (event_ids == "normal")
         normal_scores = scores[normal_mask]
+
+        if normal_scores.size == 0:
+            raise ValueError("Calibration score trace contains no normal windows; refusing to construct alert thresholds.")
+
+        if np.isnan(scores).any() or np.isinf(scores).any():
+            raise ValueError("Calibration score trace contains NaN or Inf values.")
+
+        if not (len(scores) == len(timestamps) == len(labels) == len(event_ids)):
+            raise ValueError("Score trace arrays have mismatched lengths.")
+
+        if len(normal_scores) + np.sum(labels == 1) != len(scores):
+            raise ValueError("Normal and failure counts do not sum to total usable windows.")
 
         thresholds = calculate_thresholds(normal_scores)
         persistences = [1, 3, 6, 12, 18, 30]

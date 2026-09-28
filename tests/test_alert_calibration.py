@@ -17,7 +17,7 @@ def test_persistence_correctness_and_deduplication():
     base_time = pd.Timestamp("2020-04-10 00:00:00")
     timestamps = pd.DatetimeIndex([base_time + timedelta(seconds=10*i) for i in range(len(scores))])
     labels = np.zeros(len(scores))
-    event_ids = np.array(["None"] * len(scores))
+    event_ids = np.array(["normal"] * len(scores))
 
     metrics = compute_alert_episodes(scores, timestamps, labels, event_ids, threshold=5.0, persistence=3)
     # The first 3-streak is at indices 2, 3, 4. The 4th high score (index 5) is part of the same contiguous streak, so it's deduped.
@@ -33,7 +33,7 @@ def test_gap_reset():
     # T0, T0+10, T0+80 (gap is 70s)
     timestamps = pd.DatetimeIndex([base_time, base_time + timedelta(seconds=10), base_time + timedelta(seconds=80)])
     labels = np.zeros(len(scores))
-    event_ids = np.array(["None"] * len(scores))
+    event_ids = np.array(["normal"] * len(scores))
 
     metrics = compute_alert_episodes(scores, timestamps, labels, event_ids, threshold=5.0, persistence=3)
     # Gap > 60s breaks the streak
@@ -200,3 +200,77 @@ def test_gate_missing_required_config_field(monkeypatch, tmp_path):
     res.config = MockConfigBad()
     with pytest.raises(KeyError):
         verify_replay_consistency(res, 42)
+
+def test_score_trace_non_empty_extraction_and_alignment(monkeypatch, tmp_path):
+    res = setup_mock_gate(monkeypatch, tmp_path)
+    # Give res some fake scores with 'normal' and 'Event_1'
+    res.cal_result = MagicMock()
+    res.cal_result.scores = np.array([0.1, 0.2, 5.0, 0.3])
+    base_time = pd.Timestamp("2020-04-17 00:00:00")
+    res.cal_result.timestamps = pd.DatetimeIndex([base_time + pd.Timedelta(seconds=10*i) for i in range(4)])
+    res.cal_result.labels = np.array([0, 0, 1, 0])
+    res.cal_result.event_ids = np.array(["normal", "normal", "Event_1", "normal"])
+
+    # Run the sweep just to extract and verify inside the function
+    # Wait, run_sweep writes to file.
+    # Let's mock calculate_thresholds to capture what it receives
+    import src.experiments.alert_calibration
+    captured_normal_scores = None
+    import src.experiments.alert_calibration
+    original_calc = src.experiments.alert_calibration.calculate_thresholds
+    def mock_calc(scores):
+        nonlocal captured_normal_scores
+        captured_normal_scores = scores
+        return {95.0: 1.0}
+
+    monkeypatch.setattr("src.experiments.alert_calibration.calculate_thresholds", mock_calc)
+    monkeypatch.setattr("src.experiments.alert_calibration.run_experiment", lambda **kw: res)
+
+    from src.experiments.alert_calibration import run_sweep
+    run_sweep(base_run_id="w180_standard_l1_s42", seeds=[42], output_dir=str(tmp_path), verbose=False)
+
+    # A. Non-empty extraction
+    assert captured_normal_scores is not None
+    assert len(captured_normal_scores) == 3
+
+    # B. Alignment (by checking values)
+    assert np.allclose(captured_normal_scores, [0.1, 0.2, 0.3])
+
+    # D. Count conservation (already enforced by the assert in the code)
+
+    # E. Chronology (the input was chronological, so the subset should be)
+    assert list(captured_normal_scores) == [0.1, 0.2, 0.3]
+
+def test_score_trace_empty_normal_protection(monkeypatch, tmp_path):
+    res = setup_mock_gate(monkeypatch, tmp_path)
+    res.cal_result = MagicMock()
+    # ALL FAILURE!
+    res.cal_result.scores = np.array([5.0, 6.0])
+    base_time = pd.Timestamp("2020-04-17 00:00:00")
+    res.cal_result.timestamps = pd.DatetimeIndex([base_time, base_time + pd.Timedelta(seconds=10)])
+    res.cal_result.labels = np.array([1, 1])
+    res.cal_result.event_ids = np.array(["Event_1", "Event_1"])
+
+    monkeypatch.setattr("src.experiments.alert_calibration.run_experiment", lambda **kw: res)
+    from src.experiments.alert_calibration import run_sweep
+
+    with pytest.raises(ValueError, match="no normal windows"):
+        run_sweep(base_run_id="w180_standard_l1_s42", seeds=[42], output_dir=str(tmp_path), verbose=False)
+
+def test_gap_semantics_remain_visible():
+    # F. Gap semantics: A >60-second timestamp gap remains visible to the alert episode logic.
+    from src.experiments.alert_calibration import compute_alert_episodes
+    scores = np.array([10.0, 10.0, 10.0])
+    # Gap > 60s between idx 1 and 2
+    timestamps = pd.DatetimeIndex([
+        pd.Timestamp("2020-04-17 00:00:00"),
+        pd.Timestamp("2020-04-17 00:00:10"),
+        pd.Timestamp("2020-04-17 00:01:20") # 70 seconds later
+    ])
+    labels = np.array([0, 0, 0])
+    event_ids = np.array(["normal", "normal", "normal"])
+
+    metrics = compute_alert_episodes(scores, timestamps, labels, event_ids, threshold=5.0, persistence=3)
+    # Since there's a gap, the streak resets. Thus 0 alerts with persistence=3.
+    assert metrics["total_alerts"] == 0
+
